@@ -159,23 +159,20 @@
       </div>
 
       <div class="panel" id="panel-pet">
-        <!-- Which shared pet are we looking at (partner / a friend) -->
-        <div class="pet-switch" id="pet-switch">
-          <label class="small muted">Your pet with</label>
-          <select id="pet-friend-select"></select>
+        <!-- Incoming "co-parent my pet?" requests addressed to me -->
+        <div id="pet-invites"></div>
+
+        <!-- Pet selector (shown only if I care for more than one pet) -->
+        <div class="pet-switch hidden" id="pet-switch">
+          <label class="small muted">Pet</label>
+          <select id="pet-select"></select>
         </div>
 
-        <!-- No friends yet -->
-        <div id="pet-none" class="empty hidden">
-          <p>No one to raise a pet with yet 🥚</p>
-          <p class="muted">Add a friend or partner from the <b>Invite</b> tab, then hatch a pet together.</p>
-        </div>
-
-        <!-- Not hatched yet for this pair -->
+        <!-- No pet yet — hatch one (solo) -->
         <div id="pet-hatch" class="pet-hatch hidden">
           <div class="pet-egg">🥚</div>
-          <p class="muted small" id="pet-hatch-text">Hatch a little companion you'll both take care of.</p>
-          <button class="btn primary" id="pet-hatch-btn">Hatch a pet 🐣</button>
+          <p class="muted small">Hatch your own little pet, then invite someone to help you raise it.</p>
+          <button class="btn primary" id="pet-hatch-btn">Hatch my pet 🐣</button>
         </div>
 
         <!-- The pet -->
@@ -223,6 +220,9 @@
             <div class="pet-species" id="pet-species"></div>
             <button class="btn primary small" id="pet-save-btn">Save</button>
           </div>
+
+          <!-- Co-parent status / controls (built in JS) -->
+          <div class="pet-coparent" id="pet-coparent"></div>
         </div>
       </div>
 

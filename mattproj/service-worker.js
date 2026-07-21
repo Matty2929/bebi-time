@@ -1,6 +1,6 @@
 /* Bebi Time service worker — offline app shell + fast launches.
    Bump CACHE whenever you change shell files to force an update. */
-const CACHE = "bebi-v2";
+const CACHE = "bebi-v3";
 
 // Same-origin files that make up the app shell.
 const SHELL = [
@@ -83,20 +83,38 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // Everything else (shell assets + CDN libs): cache-first, then network + cache.
-  const cacheable = url.origin === location.origin || CDN_LIBS.includes(url.hostname);
-  e.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req)
+  // Our own HTML/CSS/JS/icons: network-first so edits are picked up immediately when
+  // online; fall back to the cached copy only when offline. (Keeps a fresh copy cached.)
+  if (url.origin === location.origin) {
+    e.respondWith(
+      fetch(req)
         .then((res) => {
-          if (cacheable && res.ok && res.type !== "opaque") {
+          if (res.ok) {
             const copy = res.clone();
             caches.open(CACHE).then((c) => c.put(req, copy));
           }
           return res;
         })
-        .catch(() => cached);
-    })
-  );
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // CDN libraries (Leaflet, Supabase JS) are versioned & stable: cache-first.
+  if (CDN_LIBS.includes(url.hostname)) {
+    e.respondWith(
+      caches.match(req).then((cached) => {
+        if (cached) return cached;
+        return fetch(req).then((res) => {
+          if (res.ok && res.type !== "opaque") {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put(req, copy));
+          }
+          return res;
+        });
+      })
+    );
+    return;
+  }
+  // Anything else: just go to the network.
 });

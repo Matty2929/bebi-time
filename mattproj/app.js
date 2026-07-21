@@ -34,8 +34,9 @@ let rtChannel = null;       // Supabase Realtime channel
 let currentFriends = [];    // last-known friends list (kept in sync for realtime)
 let friendsById = {};       // uuid -> friend object
 let myLatLng = null;        // my last position, for live distance math
-let petsByFriend = {};      // friendId(uuid) -> shared pet object
-let petFriendId = null;     // which pair's pet the Pet tab is showing
+let petsById = {};          // petId -> pet object (pets I own or co-parent)
+let petSelectedId = null;   // which pet the Pet tab is showing
+let petInvitesList = [];    // incoming "co-parent my pet?" requests
 
 /* ---------------- Small helpers ---------------- */
 async function rpc(fn, args) {
@@ -161,10 +162,16 @@ function subscribeRealtime() {
       { event: "INSERT", schema: "public", table: "messages", filter: `to_id=eq.${uid}` },
       (payload) => onIncomingMessage(payload.new)
     )
-    // A shared pet changed (partner fed/played/cleaned it) — refresh to show it.
+    // A pet I care for changed (co-parent fed/played/cleaned it) — refresh.
     .on(
       "postgres_changes",
       { event: "*", schema: "public", table: "pets" },
+      () => poll()
+    )
+    // A co-parent request addressed to me arrived/changed — refresh.
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "pet_invites", filter: `to_id=eq.${uid}` },
       () => poll()
     )
     .subscribe();
@@ -295,8 +302,9 @@ async function poll() {
     friendsById = {};
     currentFriends.forEach((f) => (friendsById[f.id] = f));
     if (state.myLocation) myLatLng = state.myLocation;
-    petsByFriend = {};
-    (state.pets || []).forEach((pt) => (petsByFriend[pt.friendId] = pt));
+    petsById = {};
+    (state.pets || []).forEach((pt) => (petsById[pt.id] = pt));
+    petInvitesList = state.petInvites || [];
     renderMe();
     renderFriends(currentFriends);
     renderRequests(state.requests || []);
@@ -686,14 +694,14 @@ function petNeedLabel(pt) {
 }
 
 function showPetNotification(pt) {
-  const f = friendById(pt.friendId);
+  const f = pt.partnerId ? friendById(pt.partnerId) : null;
   const name = pt.name || "Your pet";
   const withWho = f ? ` with ${friendLabel(f)}` : "";
   const opts = {
     body: `${name} is ${petNeedLabel(pt)}. Tap to care for it${withWho} 💗`,
     icon: "icons/icon-192.png",
     badge: "icons/icon-192.png",
-    tag: "pet-" + pt.friendId, // replaces the previous nudge for this pet
+    tag: "pet-" + pt.id, // replaces the previous nudge for this pet
     data: { url: location.href },
   };
   const title = `🐾 ${name} needs you`;
@@ -712,13 +720,13 @@ function maybePetNotify() {
   let state = {};
   try { state = JSON.parse(localStorage.getItem(NOTIFY_STATE_KEY) || "{}"); } catch (_) {}
   let changed = false;
-  Object.values(petsByFriend).forEach((pt) => {
+  Object.values(petsById).forEach((pt) => {
     const minv = Math.min(pt.hunger, pt.fun, pt.clean);
-    if (minv < 25 && !state[pt.friendId]) {
+    if (minv < 25 && !state[pt.id]) {
       showPetNotification(pt);
-      state[pt.friendId] = true; changed = true;
-    } else if (minv > 45 && state[pt.friendId]) {
-      state[pt.friendId] = false; changed = true; // recovered — allow the next nudge
+      state[pt.id] = true; changed = true;
+    } else if (minv > 45 && state[pt.id]) {
+      state[pt.id] = false; changed = true; // recovered — allow the next nudge
     }
   });
   if (changed) localStorage.setItem(NOTIFY_STATE_KEY, JSON.stringify(state));
@@ -740,9 +748,9 @@ function petMood(pet) {
   return "😢";
 }
 
-function petCaredBy(pet, f) {
-  if (!pet.lastAction) return "Newly hatched 🐣 — care for it together!";
-  const who = pet.lastActor === uid ? "You" : f ? friendLabel(f) : "Someone";
+function petCaredBy(pet, partner) {
+  if (!pet.lastAction) return "Newly hatched 🐣 — say hello!";
+  const who = pet.lastActor === uid ? "You" : partner ? friendLabel(partner) : "Someone";
   const verb = PET_VERBS[pet.lastAction] || "cared for";
   return `${escapeHtml(who)} ${verb} ${escapeHtml(pet.name || "your pet")} recently 💗`;
 }
@@ -754,63 +762,78 @@ function setPetBar(sel, v) {
   el.className = val < 25 ? "low" : val < 50 ? "warn" : "";
 }
 
+function currentPet() { return petSelectedId != null ? petsById[petSelectedId] : null; }
+
 function renderPet() {
-  const friends = currentFriends;
-  if (!friends.length) {
-    $("#pet-switch").classList.add("hidden");
-    $("#pet-hatch").classList.add("hidden");
-    $("#pet-card").classList.add("hidden");
-    $("#pet-none").classList.remove("hidden");
-    return;
-  }
-  $("#pet-none").classList.add("hidden");
-  $("#pet-switch").classList.remove("hidden");
+  renderPetInvites();
+  const pets = Object.values(petsById);
 
-  if (!petFriendId || !friends.some((f) => f.id === petFriendId)) {
-    const partner = friends.find((f) => f.partner);
-    petFriendId = (partner || friends[0]).id;
+  if (petSelectedId == null || !petsById[petSelectedId]) {
+    petSelectedId = pets.length ? pets[0].id : null;
   }
-  buildPetSelect(friends);
 
-  const pet = petsByFriend[petFriendId];
-  if (pet) {
-    renderPetCard(pet);
-  } else {
+  // Pet switcher only appears when I care for more than one pet.
+  if (pets.length > 1) { buildPetSelect(pets); $("#pet-switch").classList.remove("hidden"); }
+  else $("#pet-switch").classList.add("hidden");
+
+  if (!pets.length) {
     $("#pet-card").classList.add("hidden");
     $("#pet-editor").classList.add("hidden");
-    const f = friendById(petFriendId);
-    $("#pet-hatch-text").textContent =
-      `Hatch a little companion you'll both take care of with ${f ? friendLabel(f) : "your friend"}.`;
     $("#pet-hatch").classList.remove("hidden");
+    return;
   }
+  $("#pet-hatch").classList.add("hidden");
+  renderPetCard(petsById[petSelectedId]);
 }
 
-function buildPetSelect(friends) {
-  const sel = $("#pet-friend-select");
-  const sig = friends.map((f) => f.id + ":" + friendLabel(f) + ":" + (f.partner ? 1 : 0)).join("|");
+/* Incoming "will you co-parent my pet?" requests. */
+function renderPetInvites() {
+  const wrap = $("#pet-invites");
+  wrap.innerHTML = "";
+  petInvitesList.forEach((inv) => {
+    const card = document.createElement("div");
+    card.className = "pet-invite-card";
+    card.innerHTML = `
+      <span class="pet-invite-species">${inv.species || "🐣"}</span>
+      <div class="pet-invite-text">
+        <b>${escapeHtml(inv.fromName || "A friend")}</b> wants you to co-parent
+        <b>${escapeHtml(inv.petName || "their pet")}</b> 🐾
+      </div>
+      <div class="pet-invite-actions">
+        <button class="btn primary small" data-a="accept">Accept</button>
+        <button class="btn ghost small" data-a="decline">Decline</button>
+      </div>`;
+    card.querySelector('[data-a="accept"]').addEventListener("click", () => respondCoparent(inv.id, true, inv.petId));
+    card.querySelector('[data-a="decline"]').addEventListener("click", () => respondCoparent(inv.id, false));
+    wrap.appendChild(card);
+  });
+}
+
+function buildPetSelect(pets) {
+  const sel = $("#pet-select");
+  const sig = pets.map((p) => p.id + ":" + p.name + ":" + (p.isOwner ? 1 : 0) + ":" + (p.partnerId || "")).join("|");
   if (sel.dataset.sig !== sig) {
     sel.innerHTML = "";
-    friends.forEach((f) => {
+    pets.forEach((p) => {
       const o = document.createElement("option");
-      o.value = f.id;
-      o.textContent = (f.partner ? "💗 " : "") + friendLabel(f);
+      o.value = p.id;
+      const partner = p.partnerId ? friendById(p.partnerId) : null;
+      const withWho = partner ? ` · with ${friendLabel(partner)}` : (p.isOwner ? " · solo" : "");
+      o.textContent = `${p.species || "🐣"} ${p.name || "Bebi"}${withWho}`;
       sel.appendChild(o);
     });
     sel.dataset.sig = sig;
   }
-  sel.value = petFriendId;
+  sel.value = petSelectedId;
 }
 
 function renderPetCard(pet) {
-  const f = friendById(pet.friendId);
-  $("#pet-none").classList.add("hidden");
-  $("#pet-hatch").classList.add("hidden");
+  const partner = pet.partnerId ? friendById(pet.partnerId) : null;
   $("#pet-card").classList.remove("hidden");
   $("#pet-avatar").textContent = pet.species || "🐣";
   $("#pet-mood").textContent = petMood(pet);
   $("#pet-name").textContent = pet.name || "Bebi";
-  const lvl = petLevel(pet.xp);
-  $("#pet-level").textContent = "Lv " + lvl;
+  $("#pet-level").textContent = "Lv " + petLevel(pet.xp);
   $("#pet-level").title = (pet.xp % 100) + " / 100 XP";
   const streakEl = $("#pet-streak");
   if (pet.streak > 0 && streakAlive(pet)) {
@@ -821,24 +844,121 @@ function renderPetCard(pet) {
   } else {
     streakEl.classList.add("hidden");
   }
-  $("#pet-caredby").innerHTML = petCaredBy(pet, f);
+  $("#pet-caredby").innerHTML = petCaredBy(pet, partner);
   setPetBar("#pet-bar-hunger", pet.hunger);
   setPetBar("#pet-bar-fun", pet.fun);
   setPetBar("#pet-bar-clean", pet.clean);
+  renderCoparentSection(pet, partner);
+}
+
+/* The co-parent status + controls, rebuilt from the pet's current state. */
+function renderCoparentSection(pet, partner) {
+  const box = $("#pet-coparent");
+  box.innerHTML = "";
+
+  // Already co-parented — show who, plus a way out (either carer can leave).
+  if (pet.coparentId) {
+    const name = partner ? friendLabel(partner) : "your co-parent";
+    box.appendChild(coparentStatus(`💗 Co-parenting with <b>${escapeHtml(name)}</b>`));
+    const leave = ghostButton("End co-parenting", () => {
+      if (confirm(`Stop co-parenting ${pet.name || "this pet"} with ${name}?`)) removeCoparent(pet.id);
+    });
+    box.appendChild(leave);
+    return;
+  }
+
+  // Only the owner can invite (a non-owner without a co-parent isn't a carer).
+  if (!pet.isOwner) return;
+
+  // Waiting on a reply.
+  if (pet.pendingInvite) {
+    const invitee = friendById(pet.pendingInvite.toId);
+    const nm = invitee ? friendLabel(invitee) : "your friend";
+    box.appendChild(coparentStatus(`⏳ Waiting for <b>${escapeHtml(nm)}</b> to accept…`));
+    box.appendChild(ghostButton("Cancel request", () => cancelCoparent(pet.id)));
+    return;
+  }
+
+  // Solo — offer to invite a co-parent.
+  box.appendChild(coparentStatus(`🐾 You're raising <b>${escapeHtml(pet.name || "your pet")}</b> solo.`));
+  if (!currentFriends.length) {
+    const hint = document.createElement("p");
+    hint.className = "muted small";
+    hint.textContent = "Add a friend from the Invite tab, then you can ask them to co-parent.";
+    box.appendChild(hint);
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = "coparent-invite-row";
+  const sel = document.createElement("select");
+  currentFriends.forEach((fr) => {
+    const o = document.createElement("option");
+    o.value = fr.id;
+    o.textContent = (fr.partner ? "💗 " : "") + friendLabel(fr);
+    sel.appendChild(o);
+  });
+  const btn = document.createElement("button");
+  btn.className = "btn primary small";
+  btn.textContent = "Invite 💌";
+  btn.addEventListener("click", () => inviteCoparent(pet.id, sel.value));
+  row.appendChild(sel);
+  row.appendChild(btn);
+  box.appendChild(row);
+}
+
+function coparentStatus(html) {
+  const d = document.createElement("div");
+  d.className = "coparent-status";
+  d.innerHTML = html;
+  return d;
+}
+function ghostButton(label, onClick) {
+  const b = document.createElement("button");
+  b.className = "btn ghost small coparent-btn";
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+async function inviteCoparent(petId, friendId) {
+  if (!friendId) return;
+  try {
+    await rpc("invite_coparent", { p_pet_id: petId, p_friend_id: friendId });
+    const fr = friendById(friendId);
+    toast(`💌 Co-parent request sent to ${fr ? friendLabel(fr) : "your friend"}`);
+    await poll();
+  } catch (e) { toast("⚠️ " + e.message); }
+}
+async function cancelCoparent(petId) {
+  try { await rpc("cancel_coparent", { p_pet_id: petId }); toast("Request cancelled"); await poll(); }
+  catch (e) { toast("⚠️ " + e.message); }
+}
+async function removeCoparent(petId) {
+  try { await rpc("remove_coparent", { p_pet_id: petId }); toast("Co-parenting ended"); await poll(); }
+  catch (e) { toast("⚠️ " + e.message); }
+}
+async function respondCoparent(inviteId, accept, petId) {
+  try {
+    await rpc("respond_coparent", { p_invite_id: inviteId, p_accept: accept });
+    toast(accept ? "💗 You're co-parenting now!" : "Declined");
+    if (accept && petId != null) petSelectedId = petId;
+    await poll();
+  } catch (e) { toast("⚠️ " + e.message); }
 }
 
 function updatePetAlert() {
   const badge = $("#pet-alert");
+  const invites = petInvitesList.length;
   let needs = 0;
-  Object.values(petsByFriend).forEach((pt) => {
+  Object.values(petsById).forEach((pt) => {
     if (Math.min(pt.hunger, pt.fun, pt.clean) < 25) needs++;
   });
-  badge.textContent = needs ? "!" : "";
-  badge.dataset.zero = needs === 0;
+  badge.textContent = invites ? String(invites) : needs ? "!" : "";
+  badge.dataset.zero = invites === 0 && needs === 0;
 }
 
 function petFloat(emoji) {
-  const stage = $("#pet-stage") || $(".pet-stage");
+  const stage = $(".pet-stage");
   if (!stage) return;
   const el = document.createElement("span");
   el.className = "pet-float";
@@ -848,10 +968,10 @@ function petFloat(emoji) {
 }
 
 async function doPetAction(action) {
-  if (!petFriendId) return;
+  if (petSelectedId == null) return;
   try {
-    const pet = await rpc("pet_action", { friend_id: petFriendId, action });
-    petsByFriend[pet.friendId] = pet;
+    const pet = await rpc("pet_action", { p_pet_id: petSelectedId, p_action: action });
+    petsById[pet.id] = pet;
     renderPetCard(pet);
     updatePetAlert();
     const av = $("#pet-avatar");
@@ -878,17 +998,17 @@ function buildSpeciesPicker(selected) {
   wrap.dataset.selected = selected || PET_SPECIES[0];
 }
 
-$("#pet-friend-select").addEventListener("change", (e) => {
-  petFriendId = e.target.value;
+$("#pet-select").addEventListener("change", (e) => {
+  petSelectedId = e.target.value;
   $("#pet-editor").classList.add("hidden");
   renderPet();
 });
 
 $("#pet-hatch-btn").addEventListener("click", async () => {
-  if (!petFriendId) return;
   try {
-    const pet = await rpc("get_pet", { friend_id: petFriendId });
-    petsByFriend[pet.friendId] = pet;
+    const pet = await rpc("hatch_pet", {});
+    petsById[pet.id] = pet;
+    petSelectedId = pet.id;
     toast("🐣 Your pet hatched — say hi!");
     renderPet();
     updatePetAlert();
@@ -903,7 +1023,7 @@ $("#pet-edit-btn").addEventListener("click", () => {
   const editor = $("#pet-editor");
   const nowHidden = editor.classList.toggle("hidden");
   if (!nowHidden) {
-    const pet = petsByFriend[petFriendId];
+    const pet = currentPet();
     $("#pet-name-input").value = pet?.name || "";
     buildSpeciesPicker(pet?.species);
   }
@@ -915,14 +1035,14 @@ $("#pet-notify-toggle").addEventListener("change", async (e) => {
 });
 
 $("#pet-save-btn").addEventListener("click", async () => {
-  if (!petFriendId) return;
+  if (petSelectedId == null) return;
   try {
     const pet = await rpc("set_pet", {
-      friend_id: petFriendId,
-      new_name: $("#pet-name-input").value.trim(),
-      new_species: $("#pet-species").dataset.selected || "",
+      p_pet_id: petSelectedId,
+      p_name: $("#pet-name-input").value.trim(),
+      p_species: $("#pet-species").dataset.selected || "",
     });
-    petsByFriend[pet.friendId] = pet;
+    petsById[pet.id] = pet;
     $("#pet-editor").classList.add("hidden");
     renderPetCard(pet);
     toast("Saved ✓");

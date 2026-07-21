@@ -430,3 +430,34 @@ input:focus { border-color: var(--accent); }
   background: var(--surface-2); border: 2px solid transparent; display: grid; place-items: center;
 }
 .species-opt.selected { border-color: var(--accent); }
+
+#pet-select {
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 12px; padding: 11px 12px; font-size: 15px; font-weight: 600;
+}
+
+/* Co-parent status + controls on the pet card */
+.pet-coparent {
+  margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 10px; text-align: left;
+}
+.coparent-status { font-size: 14px; line-height: 1.4; }
+.coparent-status b { color: var(--text); }
+.coparent-invite-row { display: flex; gap: 8px; }
+.coparent-invite-row select {
+  flex: 1; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: 11px; padding: 10px 12px; font-size: 14px; font-weight: 600;
+}
+.coparent-btn { align-self: flex-start; }
+
+/* Incoming co-parent request cards */
+#pet-invites:not(:empty) { margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
+.pet-invite-card {
+  background: radial-gradient(120% 120% at 0% 0%, rgba(160,108,255,.16), transparent 60%), var(--surface-2);
+  border: 1px solid var(--line); border-radius: 14px; padding: 12px;
+  display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center;
+}
+.pet-invite-species { font-size: 32px; grid-row: span 2; }
+.pet-invite-text { font-size: 13px; line-height: 1.4; }
+.pet-invite-actions { grid-column: 2; display: flex; gap: 8px; }
+.pet-invite-actions .btn { flex: 1; }
