@@ -25,7 +25,7 @@ Both are free and use the same Supabase backend.
 
 ## Features
 🔐 Email/password accounts · 🎟️ shareable friend codes · 🤝 invite & accept ·
-🗺️ live map with distance, presence & battery · 😊 moods/status · 👋❤️🫂 pings ·
+🗺️ live map with distance, presence & battery · 🖼️ emoji **or photo** avatars · 😊 moods/status · 👋❤️🫂 pings ·
 🐣 shared virtual pet you care for together · 💬 chat · 📲 installable PWA (offline shell) ·
 🧪 demo mode (tap map to place yourself).
 

@@ -184,7 +184,10 @@ function onIncomingMessage(m) {
     sb.from("messages").update({ read: true }).eq("id", m.id).then(() => {});
   } else {
     const f = friendById(m.from_id);
-    toast(`💬 ${f ? friendLabel(f) : "New message"}: ${escapeHtml(m.body.slice(0, 40))}`, 3500);
+    const preview = m.body
+      ? escapeHtml(m.body.slice(0, 40))
+      : (m.attachment_type || "").startsWith("image/") ? "📷 sent a photo" : "📎 sent a file";
+    toast(`💬 ${f ? friendLabel(f) : "New message"}: ${preview}`, 3500);
     poll(); // refresh unread badges
   }
 }
@@ -223,10 +226,31 @@ function initMap() {
   });
 }
 
-function avatarIcon(emoji, cls = "") {
+/* An avatar is either an emoji OR a small photo (a data:/http URL the user picked). */
+function isPhotoAvatar(av) {
+  return typeof av === "string" && (av.startsWith("data:") || av.startsWith("http"));
+}
+/* Avatar markup for a sized circular container (list item, hero, me-chip, …). */
+function avatarInner(av) {
+  return isPhotoAvatar(av)
+    ? `<img class="avatar-img" src="${escapeHtml(av)}" alt="">`
+    : escapeHtml(av || "🦊");
+}
+/* Small inline avatar for toasts. */
+function avatarTiny(av) {
+  return isPhotoAvatar(av)
+    ? `<img class="avatar-img avatar-tiny" src="${escapeHtml(av)}" alt="">`
+    : escapeHtml(av || "🦊");
+}
+
+function avatarIcon(av, cls = "") {
+  const photo = isPhotoAvatar(av);
+  const inner = photo
+    ? `<img class="avatar-img" src="${escapeHtml(av)}" alt="">`
+    : `<span>${escapeHtml(av || "🦊")}</span>`;
   return L.divIcon({
     className: "",
-    html: `<div class="map-avatar ${cls}"><span>${emoji}</span></div>`,
+    html: `<div class="map-avatar ${cls} ${photo ? "photo" : ""}">${inner}</div>`,
     iconSize: [44, 44],
     iconAnchor: [22, 44],
     popupAnchor: [0, -44],
@@ -322,7 +346,7 @@ async function poll() {
 
 function renderMe() {
   if (!me) return;
-  $("#me-avatar").textContent = me.avatar;
+  $("#me-avatar").innerHTML = avatarInner(me.avatar);
   $("#me-name").textContent = me.displayName;
   $("#my-code").textContent = me.friendCode;
   if (me.mood) $("#me-status").textContent = me.mood;
@@ -345,7 +369,7 @@ function renderFriends(friends) {
       const nickTag = f.nickname ? `<span class="nick-tag">(${escapeHtml(f.displayName)})</span>` : "";
       const label = escapeHtml(friendLabel(f));
       li.innerHTML = `
-        <div class="avatar">${f.avatar}<span class="dot ${f.online ? "online" : ""}"></span></div>
+        <div class="avatar">${avatarInner(f.avatar)}<span class="dot ${f.online ? "online" : ""}"></span></div>
         <div class="friend-info">
           <div class="name">${f.partner ? '<span class="heart-badge">💗</span> ' : ""}${label} ${nickTag} ${f.mood ? `<span>${escapeHtml(f.mood)}</span>` : ""}</div>
           <div class="sub">${escapeHtml(sub)}</div>
@@ -383,6 +407,18 @@ const LOVE_KINDS = [
   { kind: "miss", emoji: "🥺", label: "Miss you" },
   { kind: "thinking", emoji: "💭", label: "Thinking of you" },
   { kind: "omw", emoji: "🚗", label: "On my way" },
+  { kind: "wave", emoji: "👋", label: "Hi!" },
+  { kind: "poke", emoji: "👉", label: "Poke" },
+  { kind: "highfive", emoji: "🙌", label: "High five" },
+  { kind: "morning", emoji: "☀️", label: "Good morning" },
+  { kind: "night", emoji: "🌙", label: "Good night" },
+  { kind: "coffee", emoji: "☕", label: "Coffee?" },
+  { kind: "food", emoji: "🍔", label: "Hungry?" },
+  { kind: "call", emoji: "📞", label: "Call me" },
+  { kind: "proud", emoji: "🌟", label: "Proud of you" },
+  { kind: "date", emoji: "🌹", label: "Date night?" },
+  { kind: "safe", emoji: "🛟", label: "Text me safe" },
+  { kind: "cheer", emoji: "🎉", label: "You got this" },
 ];
 
 /* ---------------- Friend / partner profile ---------------- */
@@ -390,7 +426,7 @@ let profileFriendId = null;
 
 function openProfile(f) {
   profileFriendId = f.id;
-  $("#pf-avatar").textContent = f.avatar;
+  $("#pf-avatar").innerHTML = avatarInner(f.avatar);
   $("#pf-name").textContent = friendLabel(f);
   $("#pf-status").textContent = f.online ? "🟢 Online now" : "Last seen " + fmtAgo(f.lastSeen);
   $("#pf-nickname").value = f.nickname || "";
@@ -418,7 +454,7 @@ function openProfile(f) {
     b.innerHTML = `<span class="emoji">${lk.emoji}</span>${lk.label}`;
     b.addEventListener("click", async () => {
       try {
-        await rpc("send_ping", { friend_id: f.id, kind: lk.kind });
+        await rpc("send_ping", { p_friend_id: f.id, p_kind: lk.kind });
         toast(`${lk.emoji} Sent to ${friendLabel(f)}`);
       } catch (e) { toast("⚠️ " + e.message); }
     });
@@ -458,7 +494,7 @@ $("#pf-nickname-save").addEventListener("click", async () => {
   const f = friendById(profileFriendId);
   if (!f) return;
   try {
-    await rpc("set_friend_nickname", { friend_id: f.id, nickname: $("#pf-nickname").value.trim() });
+    await rpc("set_friend_nickname", { p_friend_id: f.id, p_nickname: $("#pf-nickname").value.trim() });
     toast("Nickname saved ✓");
     await poll();
     const nf = friendById(f.id);
@@ -473,7 +509,7 @@ $("#pf-partner-toggle").addEventListener("change", async (e) => {
   $("#pf-since-wrap").classList.toggle("hidden", !isPartner);
   try {
     await rpc("set_partner", {
-      friend_id: f.id, is_partner: isPartner, since_date: $("#pf-since").value || null,
+      p_friend_id: f.id, p_is_partner: isPartner, p_since_date: $("#pf-since").value || null,
     });
     toast(isPartner ? "💗 Set as your partner" : "Removed partner");
     await poll();
@@ -485,7 +521,7 @@ $("#pf-since").addEventListener("change", async () => {
   if (!f || !$("#pf-partner-toggle").checked) return;
   try {
     await rpc("set_partner", {
-      friend_id: f.id, is_partner: true, since_date: $("#pf-since").value || null,
+      p_friend_id: f.id, p_is_partner: true, p_since_date: $("#pf-since").value || null,
     });
     toast("Anniversary saved 💗");
     await poll();
@@ -509,7 +545,7 @@ let chatFriendId = null;
 async function openChat(f) {
   chatFriendId = f.id;
   closeProfile();
-  $("#chat-avatar").textContent = f.avatar;
+  $("#chat-avatar").innerHTML = avatarInner(f.avatar);
   $("#chat-name").textContent = friendLabel(f);
   $("#chat-log").innerHTML = '<div class="chat-empty">Loading…</div>';
   $("#chat-modal").classList.remove("hidden");
@@ -555,9 +591,50 @@ function appendMessage(m, scroll = true) {
   if (empty) empty.remove();
   const div = document.createElement("div");
   div.className = "msg " + (m.from_id === uid ? "me" : "them");
-  div.innerHTML = `${escapeHtml(m.body)}<span class="time">${fmtTime(m.created_at)}</span>`;
+  let html = "";
+  if (m.attachment_path) html += `<div class="msg-attach" data-loading="1">📎 loading…</div>`;
+  if (m.body) html += `<span class="msg-body">${escapeHtml(m.body)}</span>`;
+  html += `<span class="time">${fmtTime(m.created_at)}</span>`;
+  div.innerHTML = html;
   log.appendChild(div);
+  if (m.attachment_path) renderAttachment(div.querySelector(".msg-attach"), m);
   if (scroll) log.scrollTop = log.scrollHeight;
+}
+
+/* Short-lived signed URL for a private chat attachment (only participants can mint one). */
+async function attachmentUrl(path) {
+  try {
+    const { data, error } = await sb.storage.from("chat-attachments").createSignedUrl(path, 3600);
+    if (error) throw error;
+    return data.signedUrl;
+  } catch { return null; }
+}
+
+async function renderAttachment(el, m) {
+  if (!el) return;
+  const url = await attachmentUrl(m.attachment_path);
+  if (!url) { el.textContent = "⚠️ attachment unavailable"; el.removeAttribute("data-loading"); return; }
+  el.removeAttribute("data-loading");
+  const name = escapeHtml(m.attachment_name || "file");
+  if ((m.attachment_type || "").startsWith("image/")) {
+    el.innerHTML = `<a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${name}" loading="lazy"></a>`;
+  } else if ((m.attachment_type || "").startsWith("video/")) {
+    el.innerHTML = `<video src="${url}" controls preload="metadata"></video>`;
+  } else {
+    const size = m.attachment_size ? fmtBytes(m.attachment_size) : "";
+    el.innerHTML =
+      `<a class="file-chip" href="${url}" target="_blank" rel="noopener" download="${name}">` +
+      `<span class="file-ic">📄</span>` +
+      `<span class="file-meta"><b>${name}</b><small>${size}</small></span></a>`;
+  }
+  $("#chat-log").scrollTop = $("#chat-log").scrollHeight;
+}
+
+function fmtBytes(n) {
+  if (!n) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(0) + " KB";
+  return (n / 1048576).toFixed(1) + " MB";
 }
 
 $("#chat-close").addEventListener("click", closeChat);
@@ -569,16 +646,67 @@ $("#chat-locate").addEventListener("click", () => {
     markers[f.id]?.openPopup();
   } else toast("They haven't shared a location yet");
 });
+/* ---- Chat attachments (photos / files) ---- */
+let pendingFile = null;
+
+$("#chat-attach-btn").addEventListener("click", () => $("#chat-file").click());
+$("#chat-file").addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = ""; // let the same file be picked again later
+  if (!f) return;
+  if (f.size > 25 * 1024 * 1024) { toast("⚠️ File is too big (max 25 MB)"); return; }
+  pendingFile = f;
+  showAttachPreview(f);
+});
+
+function showAttachPreview(f) {
+  const p = $("#chat-attach-preview");
+  const isImg = f.type.startsWith("image/");
+  p.innerHTML =
+    `<span class="attach-chip">${isImg ? "🖼️" : "📎"} ${escapeHtml(f.name)} <small>${fmtBytes(f.size)}</small></span>` +
+    `<button type="button" id="chat-attach-cancel" title="Remove">✕</button>`;
+  p.classList.remove("hidden");
+  $("#chat-attach-cancel").addEventListener("click", clearPendingFile);
+}
+function clearPendingFile() {
+  pendingFile = null;
+  const p = $("#chat-attach-preview");
+  p.classList.add("hidden");
+  p.innerHTML = "";
+}
+function sanitizeName(name) {
+  return (name || "file").replace(/[^\w.\-]+/g, "_").slice(-60);
+}
+
 $("#chat-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const input = $("#chat-text");
   const body = input.value.trim();
-  if (!body || !chatFriendId) return;
+  const file = pendingFile;
+  if ((!body && !file) || !chatFriendId) return;
+
   input.value = "";
+  clearPendingFile();
+  const sendBtn = e.target.querySelector('button[type="submit"]');
+  sendBtn.disabled = true;
   try {
+    let attach = {};
+    if (file) {
+      const path = `${uid}/${crypto.randomUUID()}-${sanitizeName(file.name)}`;
+      const up = await sb.storage
+        .from("chat-attachments")
+        .upload(path, file, { contentType: file.type || "application/octet-stream", upsert: false });
+      if (up.error) throw up.error;
+      attach = {
+        attachment_path: path,
+        attachment_type: file.type || "application/octet-stream",
+        attachment_name: file.name,
+        attachment_size: file.size,
+      };
+    }
     const { data, error } = await sb
       .from("messages")
-      .insert({ from_id: uid, to_id: chatFriendId, body })
+      .insert({ from_id: uid, to_id: chatFriendId, body, ...attach })
       .select()
       .single();
     if (error) throw error;
@@ -586,6 +714,9 @@ $("#chat-form").addEventListener("submit", async (e) => {
   } catch (err) {
     toast("⚠️ " + err.message);
     input.value = body;
+    if (file) { pendingFile = file; showAttachPreview(file); }
+  } finally {
+    sendBtn.disabled = false;
   }
 });
 
@@ -600,7 +731,7 @@ function renderRequests(requests) {
     const li = document.createElement("li");
     li.className = "request-item";
     li.innerHTML = `
-      <span class="avatar">${r.avatar}</span>
+      <span class="avatar">${avatarInner(r.avatar)}</span>
       <span class="name">${escapeHtml(r.displayName)} <small class="muted">${escapeHtml(r.code || "")}</small></span>
       <button class="btn primary small" data-a="accept">Accept</button>
       <button class="btn ghost small" data-a="decline">✕</button>`;
@@ -649,8 +780,14 @@ function updateFriendMarkers(friends) {
 }
 
 /* ---------------- Shared pet ---------------- */
-const PET_VERBS = { feed: "fed", play: "played with", clean: "cleaned", cuddle: "cuddled" };
-const PET_FX = { feed: "🍎", play: "🎾", clean: "🛁", cuddle: "💞" };
+const PET_VERBS = {
+  feed: "fed", treat: "gave a treat to", play: "played with", walk: "walked",
+  sing: "sang to", clean: "cleaned", cuddle: "cuddled", nap: "napped with",
+};
+const PET_FX = {
+  feed: "🍎", treat: "🍬", play: "🎾", walk: "🌳",
+  sing: "🎵", clean: "🛁", cuddle: "💞", nap: "💤",
+};
 
 function petLevel(xp) { return 1 + Math.floor((xp || 0) / 100); }
 
@@ -1077,16 +1214,23 @@ $("#pet-save-btn").addEventListener("click", async () => {
 const PING_EMOJI = {
   wave: "👋", heart: "❤️", hug: "🫂", coffee: "☕", thinking: "💭",
   kiss: "😘", love: "❤️", miss: "🥺", omw: "🚗",
+  poke: "👉", highfive: "🙌", morning: "☀️", night: "🌙",
+  food: "🍔", call: "📞", proud: "🌟", date: "🌹", safe: "🛟", cheer: "🎉",
 };
 const PING_TEXT = {
-  miss: "misses you", omw: "is on the way to you 🚗", thinking: "is thinking of you 💭",
+  miss: "misses you 🥺", omw: "is on the way to you 🚗", thinking: "is thinking of you 💭",
+  morning: "says good morning ☀️", night: "says good night 🌙",
+  proud: "is proud of you 🌟", date: "wants a date night 🌹",
+  call: "wants you to call 📞", coffee: "is up for coffee ☕", food: "is hungry — food? 🍔",
+  poke: "poked you 👉", highfive: "sent you a high five 🙌", wave: "waved hi 👋",
+  safe: "wants you to text when you're safe 🛟", cheer: "is cheering you on 🎉",
 };
 function showPing(p) {
   const emoji = PING_EMOJI[p.kind] || "✨";
   const verb = PING_TEXT[p.kind];
   const msg = verb
-    ? `${p.avatar} ${escapeHtml(p.from)} ${verb}`
-    : `${p.avatar} ${escapeHtml(p.from)} sent you ${emoji}`;
+    ? `${avatarTiny(p.avatar)} ${escapeHtml(p.from)} ${verb}`
+    : `${avatarTiny(p.avatar)} ${escapeHtml(p.from)} sent you ${emoji}`;
   toast(msg, 4000);
 }
 let toastTimer = null;
@@ -1136,14 +1280,61 @@ function buildAvatarPicker() {
       $$(".avatar-opt").forEach((x) => x.classList.remove("selected"));
       el.classList.add("selected");
       picker.dataset.selected = a;
+      updateAvatarPreview();
     });
     picker.appendChild(el);
   });
   picker.dataset.selected = me?.avatar || AVATARS[0];
+  updateAvatarPreview();
   $("#name-input").value = me?.displayName || "";
   $("#mood-input").value = me?.mood || "";
   $("#note-input").value = me?.note || "";
 }
+
+/* Mirror the currently-selected avatar (emoji or photo) into the big preview. */
+function updateAvatarPreview() {
+  const av = $("#avatar-picker").dataset.selected;
+  $("#avatar-preview").innerHTML = avatarInner(av);
+}
+
+/* Downscale a chosen image to a small square thumbnail data URL (center-cropped),
+   so the whole avatar lives in the existing profiles.avatar text column. */
+function fileToAvatarDataURL(file, size = 160) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement("canvas");
+      canvas.width = size; canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      const min = Math.min(img.width, img.height);
+      const sx = (img.width - min) / 2, sy = (img.height - min) / 2;
+      ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size);
+      resolve(canvas.toDataURL("image/jpeg", 0.82));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("bad image")); };
+    img.src = url;
+  });
+}
+
+$("#avatar-upload-btn").addEventListener("click", () => $("#avatar-file").click());
+$("#avatar-file").addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = ""; // allow re-picking the same file later
+  if (!file) return;
+  if (!file.type.startsWith("image/")) { toast("⚠️ Please choose an image"); return; }
+  try {
+    const dataUrl = await fileToAvatarDataURL(file);
+    if (dataUrl.length > 300000) { toast("⚠️ That image is too large"); return; }
+    $("#avatar-picker").dataset.selected = dataUrl;
+    $$(".avatar-opt").forEach((x) => x.classList.remove("selected"));
+    updateAvatarPreview();
+    toast("📷 Photo ready — tap Save to apply");
+  } catch (_) {
+    toast("⚠️ Couldn't read that image");
+  }
+});
 
 $("#save-profile").addEventListener("click", async () => {
   const displayName = $("#name-input").value.trim();

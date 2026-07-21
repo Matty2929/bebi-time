@@ -199,6 +199,30 @@ input:focus { border-color: var(--accent); }
   background: var(--surface-2); border: 2px solid transparent; display: grid; place-items: center;
 }
 .avatar-opt.selected { border-color: var(--accent); }
+
+/* Profile photo picker */
+.avatar-edit { display: flex; align-items: center; gap: 14px; }
+.avatar-preview {
+  width: 68px; height: 68px; flex: none; border-radius: 50%; overflow: hidden;
+  background: var(--surface-2); border: 2px solid var(--accent);
+  display: grid; place-items: center; font-size: 34px;
+}
+.avatar-edit-text { display: flex; flex-direction: column; gap: 6px; }
+
+/* Photo avatars: fill and round whatever circular container they sit in */
+.avatar-img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+.avatar-tiny { width: 18px; height: 18px; display: inline-block; vertical-align: middle; }
+.me-chip .avatar, .friend-item .avatar, .hero-avatar { overflow: hidden; }
+.request-item .avatar {
+  width: 34px; height: 34px; overflow: hidden; border-radius: 50%;
+  display: grid; place-items: center;
+}
+#chat-avatar {
+  width: 28px; height: 28px; overflow: hidden; border-radius: 50%;
+  display: inline-grid; place-items: center; vertical-align: middle;
+}
+/* Photo map markers render as a plain circle (skip the emoji teardrop's rotation) */
+.map-avatar.photo { transform: none; border-radius: 50%; overflow: hidden; }
 .loc-mode { border-top: 1px solid var(--line); padding-top: 16px; margin-bottom: 16px; }
 .toggle { flex-direction: row; align-items: center; gap: 10px; color: var(--text); font-weight: 600; cursor: pointer; }
 .toggle input { width: 20px; height: 20px; accent-color: var(--accent); }
@@ -309,10 +333,45 @@ input:focus { border-color: var(--accent); }
 }
 .chat-empty { text-align: center; color: var(--muted); margin: auto; font-size: 14px; }
 .chat-input {
-  display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  display: flex; gap: 8px; align-items: center;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line); background: var(--surface);
 }
-.chat-input input { flex: 1; border-radius: 999px; }
+.chat-input input[type="text"], #chat-text { flex: 1; border-radius: 999px; }
+.chat-attach-btn { flex: none; width: 40px; height: 40px; font-size: 18px; }
+
+/* Message attachments */
+.msg-attach { margin-bottom: 4px; }
+.msg-attach[data-loading] { font-size: 12px; opacity: .7; }
+.msg-attach img, .msg-attach video {
+  max-width: 220px; max-height: 260px; border-radius: 12px; display: block; cursor: pointer;
+}
+.msg.me .msg-attach img, .msg.me .msg-attach video { margin-left: auto; }
+.file-chip {
+  display: inline-flex; align-items: center; gap: 10px; text-decoration: none;
+  background: rgba(255,255,255,.12); border: 1px solid var(--line);
+  padding: 10px 12px; border-radius: 12px; color: inherit; max-width: 240px;
+}
+.msg.them .file-chip { background: var(--bg); }
+.file-chip .file-ic { font-size: 22px; flex: none; }
+.file-chip .file-meta { display: flex; flex-direction: column; overflow: hidden; }
+.file-chip .file-meta b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-chip .file-meta small { font-size: 11px; opacity: .7; }
+
+/* Pending attachment preview above the input */
+.chat-attach-preview {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 14px; border-top: 1px solid var(--line); background: var(--surface-2);
+  font-size: 13px;
+}
+.chat-attach-preview .attach-chip {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-attach-preview .attach-chip small { opacity: .6; margin-left: 4px; }
+.chat-attach-preview button {
+  flex: none; width: 28px; height: 28px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--bg); color: var(--text); font-size: 13px;
+}
 
 /* couple distance banner */
 .duo-banner {

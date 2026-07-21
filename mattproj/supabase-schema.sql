@@ -72,6 +72,16 @@ create table if not exists public.messages (
 );
 create index if not exists messages_pair_idx on public.messages (from_id, to_id, created_at);
 
+-- Optional attachment on a message: a photo or file kept in Supabase Storage. Only the
+-- storage PATH + metadata live here; the bytes live in the private 'chat-attachments'
+-- bucket, fetched via short-lived signed URLs (see the Storage section near the bottom).
+alter table public.messages add column if not exists attachment_path text;
+alter table public.messages add column if not exists attachment_type text;   -- mime type
+alter table public.messages add column if not exists attachment_name text;   -- original filename
+alter table public.messages add column if not exists attachment_size bigint; -- bytes
+-- A message may now be attachment-only (no text), so allow an empty body.
+alter table public.messages alter column body set default '';
+
 -- A virtual pet. Every pet has an OWNER who created it and cares for it; the owner
 -- may invite ONE co-parent to raise it with them. Until (and unless) someone accepts,
 -- the owner cares for it solo. Stats are 0..100 and decay over real time; the stored
@@ -510,50 +520,56 @@ end;
 $$;
 
 -- Send a playful ping (wave/heart/hug…) to a friend.
-create or replace function public.send_ping(friend_id uuid, kind text)
+-- Params are p_-prefixed so they never collide with the target tables' own columns
+-- (e.g. pings.kind / friend_meta.friend_id), which would raise "column reference … is
+-- ambiguous". create-or-replace can't rename params, so drop the old signature first.
+drop function if exists public.send_ping(uuid, text);
+create function public.send_ping(p_friend_id uuid, p_kind text)
 returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare me uuid := auth.uid();
 begin
   if me is null then raise exception 'Not authenticated'; end if;
-  if not public.are_friends(me, friend_id) then
+  if not public.are_friends(me, p_friend_id) then
     raise exception 'You can only ping friends.';
   end if;
   insert into public.pings (from_id, to_id, kind)
-    values (me, friend_id, coalesce(nullif(kind, ''), 'wave'));
+    values (me, p_friend_id, coalesce(nullif(p_kind, ''), 'wave'));
   return jsonb_build_object('ok', true);
 end;
 $$;
 
 -- Set a private nickname for a friend (only you see it). Empty clears it.
-create or replace function public.set_friend_nickname(friend_id uuid, nickname text)
+drop function if exists public.set_friend_nickname(uuid, text);
+create function public.set_friend_nickname(p_friend_id uuid, p_nickname text)
 returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare me uuid := auth.uid();
 begin
   if me is null then raise exception 'Not authenticated'; end if;
-  if not public.are_friends(me, friend_id) then
+  if not public.are_friends(me, p_friend_id) then
     raise exception 'Not your friend.';
   end if;
   insert into public.friend_meta (owner_id, friend_id, nickname)
-    values (me, friend_id, coalesce(trim(nickname), ''))
+    values (me, p_friend_id, coalesce(trim(p_nickname), ''))
     on conflict (owner_id, friend_id) do update set nickname = excluded.nickname;
   return jsonb_build_object('ok', true);
 end;
 $$;
 
 -- Mark a friend as your partner ♥ (and optionally your "together since" date).
-create or replace function public.set_partner(friend_id uuid, is_partner boolean, since_date date)
+drop function if exists public.set_partner(uuid, boolean, date);
+create function public.set_partner(p_friend_id uuid, p_is_partner boolean, p_since_date date)
 returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare me uuid := auth.uid();
 begin
   if me is null then raise exception 'Not authenticated'; end if;
-  if not public.are_friends(me, friend_id) then
+  if not public.are_friends(me, p_friend_id) then
     raise exception 'Not your friend.';
   end if;
   insert into public.friend_meta (owner_id, friend_id, partner, since)
-    values (me, friend_id, coalesce(is_partner, false), since_date)
+    values (me, p_friend_id, coalesce(p_is_partner, false), p_since_date)
     on conflict (owner_id, friend_id) do update
       set partner = excluded.partner, since = excluded.since;
   return jsonb_build_object('ok', true);
@@ -723,12 +739,20 @@ begin
 
   if p_action = 'feed' then
     h := least(100, h + 35); gainxp := 5;
+  elsif p_action = 'treat' then
+    h := least(100, h + 18); f := least(100, f + 12); gainxp := 4;
   elsif p_action = 'play' then
     f := least(100, f + 35); h := greatest(0, h - 5); gainxp := 5;
+  elsif p_action = 'walk' then
+    f := least(100, f + 22); h := greatest(0, h - 8); c := greatest(0, c - 10); gainxp := 6;
+  elsif p_action = 'sing' then
+    f := least(100, f + 18); gainxp := 3;
   elsif p_action = 'clean' then
     c := least(100, c + 40); gainxp := 4;
   elsif p_action = 'cuddle' then
     f := least(100, f + 15); gainxp := 3;
+  elsif p_action = 'nap' then
+    f := least(100, f + 10); h := greatest(0, h - 3); gainxp := 3;
   else
     raise exception 'Unknown action.';
   end if;
@@ -800,3 +824,35 @@ begin
   begin alter publication supabase_realtime add table public.pets;             exception when others then null; end;
   begin alter publication supabase_realtime add table public.pet_invites;      exception when others then null; end;
 end $$;
+
+-- ---------- Storage: chat attachments ---------------------------------------
+-- A PRIVATE bucket for photos/files sent in chat. The bytes are never public; the
+-- client uploads here and then shows them via short-lived signed URLs. Access is
+-- gated by the policies below so only the two people in a conversation can read a file.
+insert into storage.buckets (id, name, public)
+  values ('chat-attachments', 'chat-attachments', false)
+  on conflict (id) do nothing;
+
+-- Upload: any signed-in user may add files they own to this bucket.
+drop policy if exists chat_attach_insert on storage.objects;
+create policy chat_attach_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'chat-attachments' and owner = auth.uid());
+
+-- Read: the uploader, OR the recipient of a message that references this exact file.
+-- (createSignedUrl is checked against this policy, so only participants can view it.)
+drop policy if exists chat_attach_select on storage.objects;
+create policy chat_attach_select on storage.objects for select to authenticated
+  using (
+    bucket_id = 'chat-attachments' and (
+      owner = auth.uid()
+      or exists (
+        select 1 from public.messages m
+        where m.attachment_path = storage.objects.name and m.to_id = auth.uid()
+      )
+    )
+  );
+
+-- Delete: you can remove files you uploaded.
+drop policy if exists chat_attach_delete on storage.objects;
+create policy chat_attach_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'chat-attachments' and owner = auth.uid());

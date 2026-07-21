@@ -206,9 +206,13 @@
 
           <div class="pet-actions">
             <button class="pet-act" data-action="feed"><span>🍎</span>Feed</button>
+            <button class="pet-act" data-action="treat"><span>🍬</span>Treat</button>
             <button class="pet-act" data-action="play"><span>🎾</span>Play</button>
+            <button class="pet-act" data-action="walk"><span>🌳</span>Walk</button>
+            <button class="pet-act" data-action="sing"><span>🎵</span>Sing</button>
             <button class="pet-act" data-action="clean"><span>🛁</span>Clean</button>
             <button class="pet-act" data-action="cuddle"><span>❤️</span>Cuddle</button>
+            <button class="pet-act" data-action="nap"><span>😴</span>Nap</button>
           </div>
 
           <!-- Rename / species editor -->
@@ -232,6 +236,14 @@
 
       <div class="panel" id="panel-you">
         <div class="profile-edit">
+          <div class="avatar-edit">
+            <div class="avatar-preview" id="avatar-preview">🦊</div>
+            <div class="avatar-edit-text">
+              <span class="small muted">Profile photo or emoji</span>
+              <button class="btn ghost small" id="avatar-upload-btn" type="button">📷 Upload a photo</button>
+            </div>
+            <input type="file" id="avatar-file" accept="image/*" hidden />
+          </div>
           <div class="avatar-picker" id="avatar-picker"></div>
           <label class="small muted">Your name
             <input id="name-input" placeholder="Your display name" maxlength="30" />
@@ -240,7 +252,7 @@
             <input id="mood-input" placeholder="😊 chilling" maxlength="40" />
           </label>
           <label class="small muted">Status note
-            <input id="note-input" placeholder="at the coffee place ☕" maxlength="120" />
+            <input id="note-input" placeholder="feeling lovely 🤍" maxlength="120" />
           </label>
           <button class="btn primary small" id="save-profile">Save</button>
         </div>
@@ -290,7 +302,7 @@
         <div class="profile-section">
           <label class="small muted">Nickname (only you see this)
             <div class="code-row">
-              <input id="pf-nickname" placeholder="e.g. Baby 💕" maxlength="30" />
+              <input id="pf-nickname" placeholder="Enter a Nickname" maxlength="30" />
               <button class="btn ghost small" id="pf-nickname-save">Save</button>
             </div>
           </label>
@@ -324,7 +336,11 @@
           <button class="icon-btn small-icon" id="chat-locate" title="View location">📍</button>
         </div>
         <div class="chat-log" id="chat-log"></div>
+        <div id="chat-attach-preview" class="chat-attach-preview hidden"></div>
         <form class="chat-input" id="chat-form">
+          <button type="button" class="icon-btn small-icon chat-attach-btn" id="chat-attach-btn" title="Attach a photo or file">📎</button>
+          <input id="chat-file" type="file" hidden
+            accept="image/*,video/*,application/pdf,.doc,.docx,.txt,.csv,.zip" />
           <input id="chat-text" placeholder="Message…" autocomplete="off" maxlength="500" />
           <button class="btn primary small" type="submit">Send</button>
         </form>
