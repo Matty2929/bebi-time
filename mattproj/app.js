@@ -174,6 +174,12 @@ function subscribeRealtime() {
       { event: "*", schema: "public", table: "pet_invites", filter: `to_id=eq.${uid}` },
       () => poll()
     )
+    // A new activity/notification for me — refresh the feed + badge.
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${uid}` },
+      () => poll()
+    )
     .subscribe();
 }
 
@@ -337,6 +343,7 @@ async function poll() {
     renderPet();
     updatePetAlert();
     maybePetNotify();
+    renderNotifications(state.notifications || [], state.notifsUnread || 0);
     (state.pings || []).forEach(showPing);
   } catch (err) {
     if (/not authenticated|jwt|token/i.test(err.message)) logout();
@@ -719,6 +726,47 @@ $("#chat-form").addEventListener("submit", async (e) => {
     sendBtn.disabled = false;
   }
 });
+
+/* ---------------- Activity / notifications ---------------- */
+function notifText(n) {
+  const who = `<b>${escapeHtml(n.actorName || "Someone")}</b>`;
+  switch (n.kind) {
+    case "ping": {
+      const emoji = PING_EMOJI[n.detail] || "✨";
+      const verb = PING_TEXT[n.detail];
+      return verb ? `${who} ${verb}` : `${who} sent you ${emoji}`;
+    }
+    case "friend_request": return `${who} sent you a friend request 👋`;
+    case "friend_new": return `You and ${who} are now friends 🤝`;
+    case "coparent_invite": return `${who} invited you to co-parent ${escapeHtml(n.detail || "a pet")} 🐣`;
+    case "coparent_accept": return `${who} accepted co-parenting ${escapeHtml(n.detail || "your pet")} 💗`;
+    default: return `${who} did something`;
+  }
+}
+
+function renderNotifications(list, unread) {
+  const badge = $("#notif-count");
+  badge.textContent = unread ? String(unread) : "";
+  badge.dataset.zero = !unread;
+
+  const ul = $("#notif-list");
+  $("#notif-empty").classList.toggle("hidden", list.length > 0);
+  ul.innerHTML = "";
+  list.forEach((n) => {
+    const li = document.createElement("li");
+    li.className = "notif-item" + (n.read ? "" : " unread");
+    li.innerHTML =
+      `<span class="notif-avatar">${avatarInner(n.actorAvatar)}</span>` +
+      `<div class="notif-body"><div class="notif-text">${notifText(n)}</div>` +
+      `<div class="notif-time muted small">${fmtAgo(n.at)}</div></div>`;
+    ul.appendChild(li);
+  });
+}
+
+async function markNotifsRead() {
+  try { await rpc("mark_notifs_read", {}); } catch (_) {}
+  poll();
+}
 
 function renderRequests(requests) {
   const badge = $("#req-count");
@@ -1395,6 +1443,7 @@ $$(".sheet-tab").forEach((t) =>
     $$(".panel").forEach((p) => p.classList.remove("active"));
     $("#panel-" + t.dataset.panel).classList.add("active");
     if (t.dataset.panel === "pet") renderPet();
+    if (t.dataset.panel === "activity") markNotifsRead();
     expandSheet();
   })
 );

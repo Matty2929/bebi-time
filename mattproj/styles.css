@@ -135,8 +135,8 @@ input:focus { border-color: var(--accent); }
 .sheet-tabs { display: flex; gap: 4px; padding: 4px 14px 10px; }
 .sheet-tab {
   flex: 1; border: none; background: transparent; color: var(--muted);
-  padding: 9px; border-radius: 10px; font-weight: 700; cursor: pointer; font-size: 14px;
-  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px 5px; border-radius: 10px; font-weight: 700; cursor: pointer; font-size: 13px;
+  display: flex; align-items: center; justify-content: center; gap: 5px;
 }
 .sheet-tab.active { background: var(--surface-2); color: var(--text); }
 .count { font-size: 11px; background: var(--bg); border-radius: 999px; padding: 1px 7px; color: var(--muted); }
@@ -284,6 +284,10 @@ input:focus { border-color: var(--accent); }
 .chat-peer { display: flex; align-items: center; gap: 8px; }
 .icon-btn.small-icon { width: 36px; height: 36px; font-size: 22px; box-shadow: none; }
 
+/* The friend/partner profile sheet scrolls as a whole so the full "send a little
+   something" grid is reachable (the chat sheet keeps overflow:hidden to pin its input). */
+#profile-modal .overlay-sheet { overflow-y: auto; }
+
 /* profile */
 .profile-hero { text-align: center; padding: 20px 16px 8px; }
 .hero-avatar {
@@ -315,6 +319,26 @@ input:focus { border-color: var(--accent); }
 .love-btn .emoji { font-size: 22px; }
 .love-btn:active { transform: scale(.95); }
 .profile-section .code-row { margin-top: 6px; }
+
+/* Activity / notifications */
+.notif-list { list-style: none; display: flex; flex-direction: column; }
+.notif-item {
+  display: flex; align-items: center; gap: 12px; padding: 12px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.notif-item:last-child { border-bottom: none; }
+.notif-item.unread { position: relative; }
+.notif-item.unread::before {
+  content: ""; position: absolute; left: -4px; top: 50%; transform: translateY(-50%);
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+}
+.notif-avatar {
+  width: 40px; height: 40px; flex: none; border-radius: 50%; overflow: hidden;
+  background: var(--surface-2); display: grid; place-items: center; font-size: 22px;
+}
+.notif-body { flex: 1; min-width: 0; }
+.notif-text { font-size: 14px; line-height: 1.35; }
+.notif-time { margin-top: 2px; }
 
 /* chat */
 .chat-sheet { height: 88vh; }

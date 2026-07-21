@@ -146,6 +146,20 @@ create table if not exists public.pet_invites (
 create unique index if not exists pet_invites_one_pending
   on public.pet_invites(pet_id) where status = 'pending';
 
+-- Activity feed: a durable log of things that happened FOR a user (pings received,
+-- friend requests & new friendships, co-parent invites & accepts…). Rows are written
+-- automatically by triggers below, so no RPC needs to remember to log.
+create table if not exists public.notifications (
+  id         bigint generated always as identity primary key,
+  user_id    uuid not null references auth.users(id) on delete cascade, -- who sees it
+  kind       text not null,        -- 'ping' | 'friend_request' | 'friend_new' | 'coparent_invite' | 'coparent_accept'
+  actor_id   uuid references auth.users(id) on delete set null,         -- who caused it
+  detail     text,                 -- extra context (ping kind, pet name…)
+  created_at timestamptz not null default now(),
+  read       boolean not null default false
+);
+create index if not exists notifications_user_idx on public.notifications(user_id, id desc);
+
 -- ---------- Helper functions ------------------------------------------------
 
 -- Distance between two lat/lng points, in meters.
@@ -226,6 +240,68 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
+-- ---------- Activity feed triggers ------------------------------------------
+-- These write rows into public.notifications whenever something social happens,
+-- so the app's Activity tab has a complete history with no per-RPC bookkeeping.
+
+-- A ping arrived -> notify the recipient (detail = the ping kind, e.g. 'kiss').
+create or replace function public.notify_on_ping()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.notifications (user_id, kind, actor_id, detail)
+    values (new.to_id, 'ping', new.from_id, new.kind);
+  return new;
+end $$;
+drop trigger if exists trg_notify_ping on public.pings;
+create trigger trg_notify_ping after insert on public.pings
+  for each row execute function public.notify_on_ping();
+
+-- A friend request was sent -> notify the recipient.
+create or replace function public.notify_on_friend_request()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if tg_op = 'INSERT' and new.status = 'pending' then
+    insert into public.notifications (user_id, kind, actor_id)
+      values (new.to_id, 'friend_request', new.from_id);
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_notify_friend_request on public.friend_requests;
+create trigger trg_notify_friend_request after insert on public.friend_requests
+  for each row execute function public.notify_on_friend_request();
+
+-- A friendship formed -> notify BOTH people (covers "your request was accepted").
+create or replace function public.notify_on_friendship()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.notifications (user_id, kind, actor_id) values
+    (new.user_a, 'friend_new', new.user_b),
+    (new.user_b, 'friend_new', new.user_a);
+  return new;
+end $$;
+drop trigger if exists trg_notify_friendship on public.friendships;
+create trigger trg_notify_friendship after insert on public.friendships
+  for each row execute function public.notify_on_friendship();
+
+-- A co-parent invite was sent -> notify invitee; when accepted -> notify the owner.
+create or replace function public.notify_on_pet_invite()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare petname text;
+begin
+  select name into petname from public.pets where id = new.pet_id;
+  if tg_op = 'INSERT' and new.status = 'pending' then
+    insert into public.notifications (user_id, kind, actor_id, detail)
+      values (new.to_id, 'coparent_invite', new.from_id, petname);
+  elsif tg_op = 'UPDATE' and new.status = 'accepted' and old.status is distinct from 'accepted' then
+    insert into public.notifications (user_id, kind, actor_id, detail)
+      values (new.from_id, 'coparent_accept', new.to_id, petname);
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_notify_pet_invite on public.pet_invites;
+create trigger trg_notify_pet_invite after insert or update on public.pet_invites
+  for each row execute function public.notify_on_pet_invite();
+
 -- ---------- Row Level Security ----------------------------------------------
 -- With RLS on, the public anon key CANNOT read anyone's data except what these
 -- policies allow. This is what keeps locations private to friends.
@@ -239,6 +315,7 @@ alter table public.friend_meta     enable row level security;
 alter table public.messages        enable row level security;
 alter table public.pets            enable row level security;
 alter table public.pet_invites     enable row level security;
+alter table public.notifications   enable row level security;
 
 -- profiles: you can read your own + your friends'; edit only your own.
 drop policy if exists profiles_select on public.profiles;
@@ -296,6 +373,14 @@ drop policy if exists pet_invites_select on public.pet_invites;
 create policy pet_invites_select on public.pet_invites for select
   using (from_id = auth.uid() or to_id = auth.uid());
 
+-- notifications: you can read & mark-read only your own. Inserts come from triggers.
+drop policy if exists notifications_select on public.notifications;
+create policy notifications_select on public.notifications for select
+  using (user_id = auth.uid());
+drop policy if exists notifications_update on public.notifications;
+create policy notifications_update on public.notifications for update
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+
 -- ---------- API functions (called from the browser via supabase.rpc) --------
 
 -- Everything the app needs to render, in one call. SECURITY DEFINER so it can
@@ -314,6 +399,8 @@ declare
   pings    jsonb;
   pets        jsonb;
   pet_invites jsonb;
+  notifs        jsonb;
+  notifs_unread bigint;
   me_json  jsonb;
 begin
   if me is null then
@@ -432,6 +519,21 @@ begin
     order by inv.id
   ) iv;
 
+  -- Activity feed: newest 40 notifications for me, plus how many are unread.
+  select coalesce(jsonb_agg(nt), '[]'::jsonb) into notifs from (
+    select n.id, n.kind, n.detail, n.read,
+           extract(epoch from n.created_at) as "at",
+           n.actor_id as "actorId",
+           pr.display_name as "actorName",
+           pr.avatar as "actorAvatar"
+    from public.notifications n
+    left join public.profiles pr on pr.id = n.actor_id
+    where n.user_id = me
+    order by n.id desc
+    limit 40
+  ) nt;
+  select count(*) into notifs_unread from public.notifications where user_id = me and read = false;
+
   select jsonb_build_object(
     'id', p.id, 'displayName', p.display_name, 'avatar', p.avatar,
     'mood', p.mood, 'note', p.note, 'friendCode', p.friend_code
@@ -445,6 +547,8 @@ begin
     'pings', pings,
     'pets', pets,
     'petInvites', pet_invites,
+    'notifications', notifs,
+    'notifsUnread', notifs_unread,
     'serverTime', extract(epoch from now())
   );
 end;
@@ -784,6 +888,17 @@ begin
   return public.pet_json(pe, me);
 end $$;
 
+-- Mark all my notifications as read (called when I open the Activity tab).
+create or replace function public.mark_notifs_read()
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare me uuid := auth.uid();
+begin
+  if me is null then raise exception 'Not authenticated'; end if;
+  update public.notifications set read = true where user_id = me and read = false;
+  return jsonb_build_object('ok', true);
+end $$;
+
 -- ---------- Grants ----------------------------------------------------------
 -- Let logged-in users call the functions and touch their own rows.
 grant usage on schema public to anon, authenticated;
@@ -809,6 +924,8 @@ grant execute on function public.remove_coparent(bigint) to authenticated;
 grant execute on function public.release_pet(bigint) to authenticated;
 grant execute on function public.pet_action(bigint, text) to authenticated;
 grant execute on function public.set_pet(bigint, text, text) to authenticated;
+grant select, update on public.notifications to authenticated;
+grant execute on function public.mark_notifs_read() to authenticated;
 
 -- ---------- Realtime (instant live updates) ---------------------------------
 -- Push row changes to the browser the moment they happen, so friends move on the
@@ -823,6 +940,7 @@ begin
   begin alter publication supabase_realtime add table public.messages;         exception when others then null; end;
   begin alter publication supabase_realtime add table public.pets;             exception when others then null; end;
   begin alter publication supabase_realtime add table public.pet_invites;      exception when others then null; end;
+  begin alter publication supabase_realtime add table public.notifications;    exception when others then null; end;
 end $$;
 
 -- ---------- Storage: chat attachments ---------------------------------------

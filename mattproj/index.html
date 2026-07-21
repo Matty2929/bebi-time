@@ -122,6 +122,9 @@
         <button class="sheet-tab" data-panel="pet">
           Pet <span class="count badge" id="pet-alert" data-zero="true"></span>
         </button>
+        <button class="sheet-tab" data-panel="activity">
+          🔔 <span class="count badge" id="notif-count" data-zero="true"></span>
+        </button>
         <button class="sheet-tab" data-panel="you">You</button>
       </div>
 
@@ -155,6 +158,14 @@
           <h3 class="section-title">Requests</h3>
           <ul id="request-list" class="request-list"></ul>
           <p id="requests-empty" class="muted small">No pending requests.</p>
+        </div>
+      </div>
+
+      <div class="panel" id="panel-activity">
+        <ul id="notif-list" class="notif-list"></ul>
+        <div id="notif-empty" class="empty">
+          <p>No activity yet 🔔</p>
+          <p class="muted">Pings, friend requests, and co-parent invites show up here.</p>
         </div>
       </div>
 
