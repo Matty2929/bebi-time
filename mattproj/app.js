@@ -37,6 +37,7 @@ let myLatLng = null;        // my last position, for live distance math
 let petsById = {};          // petId -> pet object (pets I own or co-parent)
 let petSelectedId = null;   // which pet the Pet tab is showing
 let petInvitesList = [];    // incoming "co-parent my pet?" requests
+let youFormReady = false;   // has the "You" form been filled from my profile yet?
 
 /* ---------------- Small helpers ---------------- */
 async function rpc(fn, args) {
@@ -328,6 +329,10 @@ async function poll() {
   try {
     const state = await rpc("get_state");
     me = state.me;
+    // Fill the "You" form from my saved profile the first time it's available.
+    // (enterApp builds the picker before the profile has loaded.) Only once, so we
+    // never overwrite what the user is typing on a later refresh.
+    if (!youFormReady && me) { youFormReady = true; buildAvatarPicker(); }
     currentFriends = state.friends || [];
     friendsById = {};
     currentFriends.forEach((f) => (friendsById[f.id] = f));
