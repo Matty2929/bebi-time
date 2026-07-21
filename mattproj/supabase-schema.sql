@@ -86,7 +86,7 @@ create table public.pets (
   id           bigint generated always as identity primary key,
   owner_id     uuid not null references auth.users(id) on delete cascade,
   coparent_id  uuid references auth.users(id) on delete set null,
-  name         text not null default '',
+  name         text not null default 'Pet',
   species      text not null default '🐣',
   hunger       int  not null default 80,
   fun          int  not null default 80,
