@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#0e1015" />
   <title>Bebi Time — stay close</title>
+
+  <!-- PWA: installable app shell -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Bebi Time" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon" type="image/svg+xml" href="logo.svg" />
@@ -110,6 +119,9 @@
         <button class="sheet-tab" data-panel="invite">
           Invite <span class="count badge" id="req-count" data-zero="true"></span>
         </button>
+        <button class="sheet-tab" data-panel="pet">
+          Pet <span class="count badge" id="pet-alert" data-zero="true"></span>
+        </button>
         <button class="sheet-tab" data-panel="you">You</button>
       </div>
 
@@ -146,6 +158,74 @@
         </div>
       </div>
 
+      <div class="panel" id="panel-pet">
+        <!-- Which shared pet are we looking at (partner / a friend) -->
+        <div class="pet-switch" id="pet-switch">
+          <label class="small muted">Your pet with</label>
+          <select id="pet-friend-select"></select>
+        </div>
+
+        <!-- No friends yet -->
+        <div id="pet-none" class="empty hidden">
+          <p>No one to raise a pet with yet 🥚</p>
+          <p class="muted">Add a friend or partner from the <b>Invite</b> tab, then hatch a pet together.</p>
+        </div>
+
+        <!-- Not hatched yet for this pair -->
+        <div id="pet-hatch" class="pet-hatch hidden">
+          <div class="pet-egg">🥚</div>
+          <p class="muted small" id="pet-hatch-text">Hatch a little companion you'll both take care of.</p>
+          <button class="btn primary" id="pet-hatch-btn">Hatch a pet 🐣</button>
+        </div>
+
+        <!-- The pet -->
+        <div id="pet-card" class="pet-card hidden">
+          <div class="pet-stage">
+            <div class="pet-avatar" id="pet-avatar">🐣</div>
+            <div class="pet-mood-bubble" id="pet-mood">🙂</div>
+          </div>
+          <div class="pet-name-row">
+            <strong id="pet-name">Bebi</strong>
+            <span class="pet-level" id="pet-level">Lv 1</span>
+            <span class="pet-streak hidden" id="pet-streak"></span>
+            <button class="icon-btn small-icon" id="pet-edit-btn" title="Rename / restyle">✏️</button>
+          </div>
+          <p class="pet-caredby muted small" id="pet-caredby"></p>
+
+          <div class="pet-stats">
+            <div class="pet-stat">
+              <span class="pet-stat-label">🍎 Hunger</span>
+              <div class="pet-bar"><i id="pet-bar-hunger"></i></div>
+            </div>
+            <div class="pet-stat">
+              <span class="pet-stat-label">🎾 Fun</span>
+              <div class="pet-bar"><i id="pet-bar-fun"></i></div>
+            </div>
+            <div class="pet-stat">
+              <span class="pet-stat-label">🛁 Clean</span>
+              <div class="pet-bar"><i id="pet-bar-clean"></i></div>
+            </div>
+          </div>
+
+          <div class="pet-actions">
+            <button class="pet-act" data-action="feed"><span>🍎</span>Feed</button>
+            <button class="pet-act" data-action="play"><span>🎾</span>Play</button>
+            <button class="pet-act" data-action="clean"><span>🛁</span>Clean</button>
+            <button class="pet-act" data-action="cuddle"><span>❤️</span>Cuddle</button>
+          </div>
+
+          <!-- Rename / species editor -->
+          <div class="pet-editor hidden" id="pet-editor">
+            <label class="small muted">Name
+              <input id="pet-name-input" maxlength="20" placeholder="Bebi" />
+            </label>
+            <label class="small muted">Choose a critter</label>
+            <div class="pet-species" id="pet-species"></div>
+            <button class="btn primary small" id="pet-save-btn">Save</button>
+          </div>
+        </div>
+      </div>
+
       <div class="panel" id="panel-you">
         <div class="profile-edit">
           <div class="avatar-picker" id="avatar-picker"></div>
@@ -167,6 +247,13 @@
           </label>
           <p class="muted small" id="loc-hint">Using your device GPS.</p>
           <button class="btn ghost small" id="manual-loc">Set location by tapping map (demo)</button>
+        </div>
+        <div class="loc-mode">
+          <label class="toggle">
+            <input type="checkbox" id="pet-notify-toggle" />
+            <span>🔔 Pet care reminders</span>
+          </label>
+          <p class="muted small">Get a nudge when your shared pet is hungry or needs care. Works while Bebi Time is open or installed on your home screen.</p>
         </div>
         <button class="btn danger ghost small logout" id="logout-btn">Log out</button>
       </div>
@@ -244,5 +331,16 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
+
+  <!-- Register the service worker so Bebi Time is installable & works offline -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("service-worker.js").catch((e) =>
+          console.warn("SW registration failed:", e)
+        );
+      });
+    }
+  </script>
 </body>
 </html>

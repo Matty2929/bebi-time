@@ -4,6 +4,7 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const AVATARS = ["🦊","🐼","🐨","🐯","🦁","🐸","🐵","🦉","🐧","🦄","🐙","🌸","⭐","🔥","🌊","🍀","🐺","🦈"];
+const PET_SPECIES = ["🐣","🐥","🐤","🐰","🐱","🐶","🐼","🐨","🦊","🐸","🐧","🐢","🦄","🐹","🐷","🐙","🦖","🐳"];
 
 /* ---------------- Supabase client ---------------- */
 const cfg = window.BEBI_CONFIG || {};
@@ -33,6 +34,8 @@ let rtChannel = null;       // Supabase Realtime channel
 let currentFriends = [];    // last-known friends list (kept in sync for realtime)
 let friendsById = {};       // uuid -> friend object
 let myLatLng = null;        // my last position, for live distance math
+let petsByFriend = {};      // friendId(uuid) -> shared pet object
+let petFriendId = null;     // which pair's pet the Pet tab is showing
 
 /* ---------------- Small helpers ---------------- */
 async function rpc(fn, args) {
@@ -113,6 +116,8 @@ function enterApp() {
   $("#app").classList.remove("hidden");
   if (!map) initMap();
   buildAvatarPicker();
+  $("#pet-notify-toggle").checked =
+    petNotifyEnabled() && "Notification" in window && Notification.permission === "granted";
   startLocation();
   poll();
   subscribeRealtime();
@@ -155,6 +160,12 @@ function subscribeRealtime() {
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "messages", filter: `to_id=eq.${uid}` },
       (payload) => onIncomingMessage(payload.new)
+    )
+    // A shared pet changed (partner fed/played/cleaned it) — refresh to show it.
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "pets" },
+      () => poll()
     )
     .subscribe();
 }
@@ -284,11 +295,16 @@ async function poll() {
     friendsById = {};
     currentFriends.forEach((f) => (friendsById[f.id] = f));
     if (state.myLocation) myLatLng = state.myLocation;
+    petsByFriend = {};
+    (state.pets || []).forEach((pt) => (petsByFriend[pt.friendId] = pt));
     renderMe();
     renderFriends(currentFriends);
     renderRequests(state.requests || []);
     updateFriendMarkers(currentFriends);
     updateDuoBanner(currentFriends);
+    renderPet();
+    updatePetAlert();
+    maybePetNotify();
     (state.pings || []).forEach(showPing);
   } catch (err) {
     if (/not authenticated|jwt|token/i.test(err.message)) logout();
@@ -624,6 +640,295 @@ function updateFriendMarkers(friends) {
   });
 }
 
+/* ---------------- Shared pet ---------------- */
+const PET_VERBS = { feed: "fed", play: "played with", clean: "cleaned", cuddle: "cuddled" };
+const PET_FX = { feed: "🍎", play: "🎾", clean: "🛁", cuddle: "💞" };
+
+function petLevel(xp) { return 1 + Math.floor((xp || 0) / 100); }
+
+/* Streak stays "alive" only if you were both together today or yesterday. */
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function streakAlive(pet) {
+  if (!pet.lastTogether) return false;
+  const last = new Date(pet.lastTogether + "T00:00:00");
+  const days = Math.floor((Date.now() - last.getTime()) / 86400000);
+  return days <= 1;
+}
+
+/* ---- Pet care reminders (local notifications via the service worker) ---- */
+const NOTIFY_KEY = "bebi-pet-notify";
+const NOTIFY_STATE_KEY = "bebi-pet-notify-state";
+
+function petNotifyEnabled() { return localStorage.getItem(NOTIFY_KEY) === "1"; }
+
+async function setPetNotify(on) {
+  if (!on) { localStorage.setItem(NOTIFY_KEY, "0"); return false; }
+  if (!("Notification" in window)) { toast("Notifications aren't supported on this device"); return false; }
+  let perm = Notification.permission;
+  if (perm === "default") perm = await Notification.requestPermission();
+  if (perm !== "granted") {
+    toast("🔕 Turn notifications on for Bebi Time in your browser settings");
+    return false;
+  }
+  localStorage.setItem(NOTIFY_KEY, "1");
+  toast("🔔 Reminders on — we'll nudge you when your pet needs care");
+  return true;
+}
+
+function petNeedLabel(pt) {
+  const m = Math.min(pt.hunger, pt.fun, pt.clean);
+  if (pt.hunger === m) return "hungry 🍎";
+  if (pt.clean === m) return "needs a bath 🛁";
+  return "bored 🎾";
+}
+
+function showPetNotification(pt) {
+  const f = friendById(pt.friendId);
+  const name = pt.name || "Your pet";
+  const withWho = f ? ` with ${friendLabel(f)}` : "";
+  const opts = {
+    body: `${name} is ${petNeedLabel(pt)}. Tap to care for it${withWho} 💗`,
+    icon: "icons/icon-192.png",
+    badge: "icons/icon-192.png",
+    tag: "pet-" + pt.friendId, // replaces the previous nudge for this pet
+    data: { url: location.href },
+  };
+  const title = `🐾 ${name} needs you`;
+  if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+    navigator.serviceWorker.ready
+      .then((reg) => reg.showNotification(title, opts))
+      .catch(() => { try { new Notification(title, opts); } catch (_) {} });
+  } else {
+    try { new Notification(title, opts); } catch (_) {}
+  }
+}
+
+/* Fire one nudge per pet when a stat first drops low; re-arm once it recovers. */
+function maybePetNotify() {
+  if (!petNotifyEnabled() || !("Notification" in window) || Notification.permission !== "granted") return;
+  let state = {};
+  try { state = JSON.parse(localStorage.getItem(NOTIFY_STATE_KEY) || "{}"); } catch (_) {}
+  let changed = false;
+  Object.values(petsByFriend).forEach((pt) => {
+    const minv = Math.min(pt.hunger, pt.fun, pt.clean);
+    if (minv < 25 && !state[pt.friendId]) {
+      showPetNotification(pt);
+      state[pt.friendId] = true; changed = true;
+    } else if (minv > 45 && state[pt.friendId]) {
+      state[pt.friendId] = false; changed = true; // recovered — allow the next nudge
+    }
+  });
+  if (changed) localStorage.setItem(NOTIFY_STATE_KEY, JSON.stringify(state));
+}
+
+function petMood(pet) {
+  const { hunger, fun, clean } = pet;
+  const minv = Math.min(hunger, fun, clean);
+  const avg = (hunger + fun + clean) / 3;
+  if (minv < 15) {
+    if (hunger === minv) return "🍽️";
+    if (clean === minv) return "🧼";
+    return "😢";
+  }
+  if (avg >= 80) return "😻";
+  if (avg >= 60) return "😊";
+  if (avg >= 40) return "🙂";
+  if (avg >= 25) return "😕";
+  return "😢";
+}
+
+function petCaredBy(pet, f) {
+  if (!pet.lastAction) return "Newly hatched 🐣 — care for it together!";
+  const who = pet.lastActor === uid ? "You" : f ? friendLabel(f) : "Someone";
+  const verb = PET_VERBS[pet.lastAction] || "cared for";
+  return `${escapeHtml(who)} ${verb} ${escapeHtml(pet.name || "your pet")} recently 💗`;
+}
+
+function setPetBar(sel, v) {
+  const el = $(sel);
+  const val = Math.max(0, Math.min(100, Math.round(v)));
+  el.style.width = val + "%";
+  el.className = val < 25 ? "low" : val < 50 ? "warn" : "";
+}
+
+function renderPet() {
+  const friends = currentFriends;
+  if (!friends.length) {
+    $("#pet-switch").classList.add("hidden");
+    $("#pet-hatch").classList.add("hidden");
+    $("#pet-card").classList.add("hidden");
+    $("#pet-none").classList.remove("hidden");
+    return;
+  }
+  $("#pet-none").classList.add("hidden");
+  $("#pet-switch").classList.remove("hidden");
+
+  if (!petFriendId || !friends.some((f) => f.id === petFriendId)) {
+    const partner = friends.find((f) => f.partner);
+    petFriendId = (partner || friends[0]).id;
+  }
+  buildPetSelect(friends);
+
+  const pet = petsByFriend[petFriendId];
+  if (pet) {
+    renderPetCard(pet);
+  } else {
+    $("#pet-card").classList.add("hidden");
+    $("#pet-editor").classList.add("hidden");
+    const f = friendById(petFriendId);
+    $("#pet-hatch-text").textContent =
+      `Hatch a little companion you'll both take care of with ${f ? friendLabel(f) : "your friend"}.`;
+    $("#pet-hatch").classList.remove("hidden");
+  }
+}
+
+function buildPetSelect(friends) {
+  const sel = $("#pet-friend-select");
+  const sig = friends.map((f) => f.id + ":" + friendLabel(f) + ":" + (f.partner ? 1 : 0)).join("|");
+  if (sel.dataset.sig !== sig) {
+    sel.innerHTML = "";
+    friends.forEach((f) => {
+      const o = document.createElement("option");
+      o.value = f.id;
+      o.textContent = (f.partner ? "💗 " : "") + friendLabel(f);
+      sel.appendChild(o);
+    });
+    sel.dataset.sig = sig;
+  }
+  sel.value = petFriendId;
+}
+
+function renderPetCard(pet) {
+  const f = friendById(pet.friendId);
+  $("#pet-none").classList.add("hidden");
+  $("#pet-hatch").classList.add("hidden");
+  $("#pet-card").classList.remove("hidden");
+  $("#pet-avatar").textContent = pet.species || "🐣";
+  $("#pet-mood").textContent = petMood(pet);
+  $("#pet-name").textContent = pet.name || "Bebi";
+  const lvl = petLevel(pet.xp);
+  $("#pet-level").textContent = "Lv " + lvl;
+  $("#pet-level").title = (pet.xp % 100) + " / 100 XP";
+  const streakEl = $("#pet-streak");
+  if (pet.streak > 0 && streakAlive(pet)) {
+    streakEl.textContent = "🔥 " + pet.streak;
+    streakEl.title = `${pet.streak}-day together streak — you both showed up ${
+      pet.lastTogether === todayStr() ? "today" : "yesterday"}. Keep it going!`;
+    streakEl.classList.remove("hidden");
+  } else {
+    streakEl.classList.add("hidden");
+  }
+  $("#pet-caredby").innerHTML = petCaredBy(pet, f);
+  setPetBar("#pet-bar-hunger", pet.hunger);
+  setPetBar("#pet-bar-fun", pet.fun);
+  setPetBar("#pet-bar-clean", pet.clean);
+}
+
+function updatePetAlert() {
+  const badge = $("#pet-alert");
+  let needs = 0;
+  Object.values(petsByFriend).forEach((pt) => {
+    if (Math.min(pt.hunger, pt.fun, pt.clean) < 25) needs++;
+  });
+  badge.textContent = needs ? "!" : "";
+  badge.dataset.zero = needs === 0;
+}
+
+function petFloat(emoji) {
+  const stage = $("#pet-stage") || $(".pet-stage");
+  if (!stage) return;
+  const el = document.createElement("span");
+  el.className = "pet-float";
+  el.textContent = emoji;
+  stage.appendChild(el);
+  setTimeout(() => el.remove(), 1100);
+}
+
+async function doPetAction(action) {
+  if (!petFriendId) return;
+  try {
+    const pet = await rpc("pet_action", { friend_id: petFriendId, action });
+    petsByFriend[pet.friendId] = pet;
+    renderPetCard(pet);
+    updatePetAlert();
+    const av = $("#pet-avatar");
+    av.classList.remove("bounce"); void av.offsetWidth; av.classList.add("bounce");
+    petFloat(PET_FX[action] || "✨");
+  } catch (e) { toast("⚠️ " + e.message); }
+}
+
+function buildSpeciesPicker(selected) {
+  const wrap = $("#pet-species");
+  wrap.innerHTML = "";
+  PET_SPECIES.forEach((s) => {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "species-opt" + (s === selected ? " selected" : "");
+    el.textContent = s;
+    el.addEventListener("click", () => {
+      $$("#pet-species .species-opt").forEach((x) => x.classList.remove("selected"));
+      el.classList.add("selected");
+      wrap.dataset.selected = s;
+    });
+    wrap.appendChild(el);
+  });
+  wrap.dataset.selected = selected || PET_SPECIES[0];
+}
+
+$("#pet-friend-select").addEventListener("change", (e) => {
+  petFriendId = e.target.value;
+  $("#pet-editor").classList.add("hidden");
+  renderPet();
+});
+
+$("#pet-hatch-btn").addEventListener("click", async () => {
+  if (!petFriendId) return;
+  try {
+    const pet = await rpc("get_pet", { friend_id: petFriendId });
+    petsByFriend[pet.friendId] = pet;
+    toast("🐣 Your pet hatched — say hi!");
+    renderPet();
+    updatePetAlert();
+  } catch (e) { toast("⚠️ " + e.message); }
+});
+
+$$(".pet-act").forEach((b) =>
+  b.addEventListener("click", () => doPetAction(b.dataset.action))
+);
+
+$("#pet-edit-btn").addEventListener("click", () => {
+  const editor = $("#pet-editor");
+  const nowHidden = editor.classList.toggle("hidden");
+  if (!nowHidden) {
+    const pet = petsByFriend[petFriendId];
+    $("#pet-name-input").value = pet?.name || "";
+    buildSpeciesPicker(pet?.species);
+  }
+});
+
+$("#pet-notify-toggle").addEventListener("change", async (e) => {
+  const ok = await setPetNotify(e.target.checked);
+  e.target.checked = ok;
+});
+
+$("#pet-save-btn").addEventListener("click", async () => {
+  if (!petFriendId) return;
+  try {
+    const pet = await rpc("set_pet", {
+      friend_id: petFriendId,
+      new_name: $("#pet-name-input").value.trim(),
+      new_species: $("#pet-species").dataset.selected || "",
+    });
+    petsByFriend[pet.friendId] = pet;
+    $("#pet-editor").classList.add("hidden");
+    renderPetCard(pet);
+    toast("Saved ✓");
+  } catch (e) { toast("⚠️ " + e.message); }
+});
+
 /* ---------------- Pings / toast ---------------- */
 const PING_EMOJI = {
   wave: "👋", heart: "❤️", hug: "🫂", coffee: "☕", thinking: "💭",
@@ -754,6 +1059,7 @@ $$(".sheet-tab").forEach((t) =>
     t.classList.add("active");
     $$(".panel").forEach((p) => p.classList.remove("active"));
     $("#panel-" + t.dataset.panel).classList.add("active");
+    if (t.dataset.panel === "pet") renderPet();
     expandSheet();
   })
 );
