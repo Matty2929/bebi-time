@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0e1015" />
+  <title>Bebi Time — stay close</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" type="image/svg+xml" href="logo.svg" />
+</head>
+<body>
+
+  <!-- ============ SETUP WARNING (shown if config.js not filled in) ============ -->
+  <div id="setup-warning" class="screen auth-screen hidden">
+    <div class="auth-card">
+      <div class="brand"><span class="brand-mark">💕</span><h1>Almost there</h1></div>
+      <p class="muted" style="line-height:1.6">
+        Bebi Time needs your Supabase details. Open <code>config.js</code> and paste in
+        your <b>Project URL</b> and <b>anon public key</b>, then reload.
+        See <b>DEPLOY-GITHUB-PAGES.md</b> for the full walkthrough.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ AUTH SCREEN ============ -->
+  <div id="auth" class="screen auth-screen hidden">
+    <div class="auth-card">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="bebiGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#6c8cff"/>
+                <stop offset="1" stop-color="#a06cff"/>
+              </linearGradient>
+              <filter id="bebiSoft" x="-20%" y="-20%" width="140%" height="140%">
+                <feDropShadow dx="0" dy="2" stdDeviation="1.5" flood-color="#000" flood-opacity="0.18"/>
+              </filter>
+            </defs>
+            <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#bebiGrad)"/>
+            <circle cx="32" cy="27" r="21" fill="#fff" opacity="0.10"/>
+            <path filter="url(#bebiSoft)" d="M32 12c-8.3 0-15 6.5-15 14.7 0 10.6 13.1 22.3 14.1 23.2a1.4 1.4 0 0 0 1.9 0C34 49 47 37.3 47 26.7 47 18.5 40.3 12 32 12z" fill="#ffffff"/>
+            <path d="M32 34.6s-7.6-4.6-7.6-9.9c0-2.6 2.1-4.3 4.3-4.3 1.7 0 3 .9 3.3 2.2.3-1.3 1.6-2.2 3.3-2.2 2.2 0 4.3 1.7 4.3 4.3 0 5.3-7.6 9.9-7.6 9.9z" fill="url(#bebiGrad)"/>
+          </svg>
+        </span>
+        <h1>Bebi&nbsp;Time</h1>
+        <p class="tagline">Stay close, wherever you are.</p>
+      </div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="login">Log in</button>
+        <button class="tab" data-tab="register">Create account</button>
+      </div>
+
+      <form id="login-form" class="auth-form">
+        <label>Email
+          <input name="email" type="email" autocomplete="email" placeholder="you@example.com" required />
+        </label>
+        <label>Password
+          <input name="password" type="password" autocomplete="current-password" placeholder="••••••" required />
+        </label>
+        <button class="btn primary" type="submit">Log in</button>
+      </form>
+
+      <form id="register-form" class="auth-form hidden">
+        <label>Display name
+          <input name="displayName" placeholder="What friends call you" />
+        </label>
+        <label>Email
+          <input name="email" type="email" autocomplete="email" placeholder="you@example.com" required />
+        </label>
+        <label>Password
+          <input name="password" type="password" autocomplete="new-password" placeholder="at least 6 characters" required />
+        </label>
+        <button class="btn primary" type="submit">Create account</button>
+      </form>
+
+      <p id="auth-error" class="error"></p>
+    </div>
+    <p class="footnote">Your location is only ever shared with friends you accept.</p>
+  </div>
+
+  <!-- ============ APP SCREEN ============ -->
+  <div id="app" class="screen hidden">
+    <div id="map"></div>
+
+    <div class="duo-banner hidden" id="duo-banner"></div>
+
+    <header class="topbar">
+      <div class="me-chip" id="me-chip">
+        <span class="avatar" id="me-avatar">🦊</span>
+        <div class="me-text">
+          <strong id="me-name">You</strong>
+          <small id="me-status">Locating…</small>
+        </div>
+      </div>
+      <button class="icon-btn" id="recenter-btn" title="Recenter on me">◎</button>
+    </header>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <div class="sheet" id="sheet">
+      <div class="sheet-handle" id="sheet-handle"></div>
+
+      <div class="sheet-tabs">
+        <button class="sheet-tab active" data-panel="friends">
+          Friends <span class="count" id="friend-count">0</span>
+        </button>
+        <button class="sheet-tab" data-panel="invite">
+          Invite <span class="count badge" id="req-count" data-zero="true"></span>
+        </button>
+        <button class="sheet-tab" data-panel="you">You</button>
+      </div>
+
+      <div class="panel active" id="panel-friends">
+        <ul id="friend-list" class="friend-list"></ul>
+        <div id="friends-empty" class="empty">
+          <p>No friends yet 👋</p>
+          <p class="muted">Share your code from the <b>Invite</b> tab.</p>
+        </div>
+      </div>
+
+      <div class="panel" id="panel-invite">
+        <div class="code-block">
+          <span class="muted small">Your friend code</span>
+          <div class="code-row">
+            <code id="my-code">------</code>
+            <button class="btn ghost small" id="copy-code">Copy</button>
+          </div>
+          <p class="muted small">Friends enter this to connect with you.</p>
+        </div>
+
+        <form id="add-friend-form" class="add-form">
+          <label class="small muted">Add a friend by code</label>
+          <div class="code-row">
+            <input id="friend-code-input" placeholder="e.g. K7P2QX" maxlength="6" autocapitalize="characters" />
+            <button class="btn primary small" type="submit">Send</button>
+          </div>
+        </form>
+
+        <div id="requests-block">
+          <h3 class="section-title">Requests</h3>
+          <ul id="request-list" class="request-list"></ul>
+          <p id="requests-empty" class="muted small">No pending requests.</p>
+        </div>
+      </div>
+
+      <div class="panel" id="panel-you">
+        <div class="profile-edit">
+          <div class="avatar-picker" id="avatar-picker"></div>
+          <label class="small muted">Your name
+            <input id="name-input" placeholder="Your display name" maxlength="30" />
+          </label>
+          <label class="small muted">Mood
+            <input id="mood-input" placeholder="😊 chilling" maxlength="40" />
+          </label>
+          <label class="small muted">Status note
+            <input id="note-input" placeholder="at the coffee place ☕" maxlength="120" />
+          </label>
+          <button class="btn primary small" id="save-profile">Save</button>
+        </div>
+        <div class="loc-mode">
+          <label class="toggle">
+            <input type="checkbox" id="share-toggle" checked />
+            <span>Share my live location</span>
+          </label>
+          <p class="muted small" id="loc-hint">Using your device GPS.</p>
+          <button class="btn ghost small" id="manual-loc">Set location by tapping map (demo)</button>
+        </div>
+        <button class="btn danger ghost small logout" id="logout-btn">Log out</button>
+      </div>
+    </div>
+  </div>
+
+    <!-- ============ FRIEND / PARTNER PROFILE ============ -->
+    <div class="overlay hidden" id="profile-modal">
+      <div class="overlay-sheet">
+        <div class="overlay-head">
+          <button class="icon-btn small-icon" id="profile-close">‹</button>
+          <span class="overlay-title">Profile</span>
+          <span style="width:36px"></span>
+        </div>
+        <div class="profile-hero">
+          <span class="hero-avatar" id="pf-avatar">🦊</span>
+          <div class="hero-name-row">
+            <h2 id="pf-name">Name</h2>
+            <span class="partner-badge hidden" id="pf-partner-badge">💗 Partner</span>
+          </div>
+          <p class="muted small" id="pf-status">online</p>
+          <p class="together hidden" id="pf-together">💗 Together for 0 days</p>
+        </div>
+
+        <div class="profile-actions">
+          <button class="pf-action" id="pf-locate"><span>📍</span>View location</button>
+          <button class="pf-action" id="pf-message"><span>💬</span>Message</button>
+        </div>
+
+        <div class="profile-section">
+          <label class="small muted">Nickname (only you see this)
+            <div class="code-row">
+              <input id="pf-nickname" placeholder="e.g. Baby 💕" maxlength="30" />
+              <button class="btn ghost small" id="pf-nickname-save">Save</button>
+            </div>
+          </label>
+        </div>
+
+        <div class="profile-section">
+          <label class="toggle">
+            <input type="checkbox" id="pf-partner-toggle" />
+            <span>💗 This is my partner</span>
+          </label>
+          <label class="small muted" id="pf-since-wrap" style="margin-top:10px">Together since
+            <input id="pf-since" type="date" />
+          </label>
+        </div>
+
+        <div class="profile-section">
+          <span class="small muted">Send a little something 💌</span>
+          <div class="love-grid" id="pf-love"></div>
+        </div>
+
+        <button class="btn danger ghost small" id="pf-remove" style="width:100%;margin-top:8px">Remove friend</button>
+      </div>
+    </div>
+
+    <!-- ============ CHAT ============ -->
+    <div class="overlay hidden" id="chat-modal">
+      <div class="overlay-sheet chat-sheet">
+        <div class="overlay-head">
+          <button class="icon-btn small-icon" id="chat-close">‹</button>
+          <span class="chat-peer"><span id="chat-avatar">🦊</span> <b id="chat-name">Name</b></span>
+          <button class="icon-btn small-icon" id="chat-locate" title="View location">📍</button>
+        </div>
+        <div class="chat-log" id="chat-log"></div>
+        <form class="chat-input" id="chat-form">
+          <input id="chat-text" placeholder="Message…" autocomplete="off" maxlength="500" />
+          <button class="btn primary small" type="submit">Send</button>
+        </form>
+      </div>
+    </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
