@@ -77,12 +77,22 @@ create index if not exists messages_pair_idx on public.messages (from_id, to_id,
 -- the owner cares for it solo. Stats are 0..100 and decay over real time; the stored
 -- value is "the value at updated_at", decay is computed on read (no cron needed).
 --
--- NOTE: this replaces the earlier pair-keyed pets table. `drop ... cascade` clears the
--- old table, its policies and any pets you were testing with — safe pre-launch.
-drop table if exists public.pet_invites cascade;
-drop table if exists public.pets cascade;
+-- ONE-TIME MIGRATION ONLY: the earliest version of this app used a pair-keyed pets
+-- table (user_a/user_b). If that old shape is detected we drop it so the new tables
+-- below can be created. On a NORMAL re-run (new structure already in place) NOTHING is
+-- dropped — so re-running this script to pick up changes KEEPS ALL EXISTING PETS.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'pets' and column_name = 'user_a'
+  ) then
+    drop table if exists public.pet_invites cascade;
+    drop table if exists public.pets cascade;
+  end if;
+end $$;
 
-create table public.pets (
+create table if not exists public.pets (
   id           bigint generated always as identity primary key,
   owner_id     uuid not null references auth.users(id) on delete cascade,
   coparent_id  uuid references auth.users(id) on delete set null,
@@ -102,11 +112,20 @@ create table public.pets (
   seen_owner     date,
   seen_coparent  date
 );
+-- Forward-compatible: add any column a slightly older copy of this table may be missing,
+-- so future re-runs stay non-destructive (data preserved).
+alter table public.pets add column if not exists coparent_id   uuid references auth.users(id) on delete set null;
+alter table public.pets add column if not exists last_action   text;
+alter table public.pets add column if not exists last_actor    uuid references auth.users(id) on delete set null;
+alter table public.pets add column if not exists streak        int not null default 0;
+alter table public.pets add column if not exists last_together date;
+alter table public.pets add column if not exists seen_owner    date;
+alter table public.pets add column if not exists seen_coparent date;
 create index if not exists pets_owner_idx    on public.pets(owner_id);
 create index if not exists pets_coparent_idx on public.pets(coparent_id);
 
 -- A pending "will you co-parent my pet?" request. One pending invite per pet.
-create table public.pet_invites (
+create table if not exists public.pet_invites (
   id         bigint generated always as identity primary key,
   pet_id     bigint not null references public.pets(id) on delete cascade,
   from_id    uuid not null references auth.users(id) on delete cascade,
@@ -668,6 +687,21 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- Release (permanently delete) a pet. Owner-only — a co-parent uses remove_coparent
+-- to step away instead. Deleting the pet cascades away its co-parent invites.
+create or replace function public.release_pet(p_pet_id bigint)
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare me uuid := auth.uid(); pe public.pets%rowtype;
+begin
+  if me is null then raise exception 'Not authenticated'; end if;
+  select * into pe from public.pets where id = p_pet_id;
+  if not found then raise exception 'Pet not found.'; end if;
+  if pe.owner_id <> me then raise exception 'Only the owner can release this pet.'; end if;
+  delete from public.pets where id = p_pet_id;
+  return jsonb_build_object('ok', true);
+end $$;
+
 -- Care for the pet: feed / play / clean / cuddle. Applies decay first so the boost
 -- stacks on the pet's real current state, then bumps XP. Any carer may do this.
 create or replace function public.pet_action(p_pet_id bigint, p_action text)
@@ -748,6 +782,7 @@ grant execute on function public.invite_coparent(bigint, uuid) to authenticated;
 grant execute on function public.cancel_coparent(bigint) to authenticated;
 grant execute on function public.respond_coparent(bigint, boolean) to authenticated;
 grant execute on function public.remove_coparent(bigint) to authenticated;
+grant execute on function public.release_pet(bigint) to authenticated;
 grant execute on function public.pet_action(bigint, text) to authenticated;
 grant execute on function public.set_pet(bigint, text, text) to authenticated;
 

@@ -47,9 +47,10 @@ From the **Pet** tab you **hatch your own pet** (solo — no friend required). Y
   someone else later.
 
 Either carer can later **end co-parenting** (the pet reverts to a solo pet owned by the
-owner). You can **hatch as many pets as you like** (up to a safety cap of 20) — use
-“Hatch another pet”, and the tab shows a picker to switch between the pets you own and
-co-parent. Stats decay over real time (computed on read — no background job) and each pet
+owner), and the **owner can release (permanently delete) a pet** from the ✏️ edit panel —
+which also removes it for a co-parent. You can **hatch as many pets as you like** (up to a
+safety cap of 20) — use “Hatch another pet”, and the tab shows a picker to switch between
+the pets you own and co-parent. Stats decay over real time (computed on read — no background job) and each pet
 earns XP/levels.
 
 Data model: a `pets` table (`owner_id` + optional `coparent_id`) and a `pet_invites`
@@ -73,11 +74,12 @@ server-sent **Web Push** (a Supabase Edge Function on a schedule + VAPID keys); 
 worker already includes the `push` handler for that — ask and it can be scaffolded.
 
 > **After updating:** re-run **`supabase-schema.sql`** in your Supabase SQL Editor once to
-> create the pet tables, security rules, and functions. Everything except the pet tables is
-> idempotent (`create … if not exists` / `create or replace`). ⚠️ The pet redesign **drops
-> and recreates** `pets` (now `owner_id` + `coparent_id`) and adds `pet_invites`, so any
-> **test pets are cleared** — expected pre-launch, but don’t run it on a pets table you care
-> about without backing it up first.
+> pick up new tables, rules, and functions. The whole script is **idempotent and
+> non-destructive** (`create … if not exists` / `add column if not exists` /
+> `create or replace`), so **re-running it keeps all existing pets and data.** The only
+> exception is a one-time auto-migration: if your database still has the *original*
+> pair-keyed `pets` table (columns `user_a`/`user_b`), that old table is dropped once so the
+> new `owner_id`/`coparent_id` tables can be created.
 
 ## How the pieces fit
 ```

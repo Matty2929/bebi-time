@@ -1031,8 +1031,27 @@ $("#pet-edit-btn").addEventListener("click", () => {
     const pet = currentPet();
     $("#pet-name-input").value = pet?.name || "";
     buildSpeciesPicker(pet?.species);
+    // Only the owner can permanently release a pet.
+    $("#pet-release-btn").classList.toggle("hidden", !pet?.isOwner);
   }
 });
+
+async function releasePet() {
+  const pet = currentPet();
+  if (!pet) return;
+  const also = pet.coparentId ? " for you and your co-parent" : "";
+  if (!confirm(`Release ${pet.name || "this pet"}? This permanently deletes it${also}.`)) return;
+  try {
+    await rpc("release_pet", { p_pet_id: pet.id });
+    delete petsById[pet.id];
+    petSelectedId = null; // renderPet will pick another pet or show the hatch screen
+    $("#pet-editor").classList.add("hidden");
+    toast("🕊️ " + (pet.name || "Pet") + " released");
+    renderPet();
+    updatePetAlert();
+  } catch (e) { toast("⚠️ " + e.message); }
+}
+$("#pet-release-btn").addEventListener("click", releasePet);
 
 $("#pet-notify-toggle").addEventListener("change", async (e) => {
   const ok = await setPetNotify(e.target.checked);
