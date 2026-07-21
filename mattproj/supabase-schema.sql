@@ -577,18 +577,17 @@ returns boolean language sql immutable as $$
   select me = pe.owner_id or me = pe.coparent_id;
 $$;
 
--- Create my pet (solo). Each user owns at most one pet, so this is idempotent —
--- if I already own one, it's returned instead of making another.
+-- Create a new pet (solo) that I own. You can have as many as you like, up to a
+-- generous safety cap that just stops a runaway loop from filling the table.
 create or replace function public.hatch_pet()
 returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare me uuid := auth.uid(); pe public.pets%rowtype;
+declare me uuid := auth.uid(); pe public.pets%rowtype; n int;
 begin
   if me is null then raise exception 'Not authenticated'; end if;
-  select * into pe from public.pets where owner_id = me limit 1;
-  if not found then
-    insert into public.pets (owner_id) values (me) returning * into pe;
-  end if;
+  select count(*) into n from public.pets where owner_id = me;
+  if n >= 20 then raise exception 'You already have 20 pets — that''s the limit for now.'; end if;
+  insert into public.pets (owner_id) values (me) returning * into pe;
   return public.pet_json(pe, me);
 end $$;
 

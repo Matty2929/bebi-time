@@ -435,6 +435,7 @@ input:focus { border-color: var(--accent); }
   background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
   border-radius: 12px; padding: 11px 12px; font-size: 15px; font-weight: 600;
 }
+.pet-add-btn { width: 100%; margin-top: 12px; }
 
 /* Co-parent status + controls on the pet card */
 .pet-coparent {

@@ -779,10 +779,12 @@ function renderPet() {
   if (!pets.length) {
     $("#pet-card").classList.add("hidden");
     $("#pet-editor").classList.add("hidden");
+    $("#pet-add-btn").classList.add("hidden");
     $("#pet-hatch").classList.remove("hidden");
     return;
   }
   $("#pet-hatch").classList.add("hidden");
+  $("#pet-add-btn").classList.toggle("hidden", pets.length >= 20);
   renderPetCard(petsById[petSelectedId]);
 }
 
@@ -1004,16 +1006,19 @@ $("#pet-select").addEventListener("change", (e) => {
   renderPet();
 });
 
-$("#pet-hatch-btn").addEventListener("click", async () => {
+async function hatchPet() {
   try {
     const pet = await rpc("hatch_pet", {});
     petsById[pet.id] = pet;
-    petSelectedId = pet.id;
-    toast("🐣 Your pet hatched — say hi!");
+    petSelectedId = pet.id; // jump to the new pet
+    $("#pet-editor").classList.add("hidden");
+    toast("🐣 A new pet hatched — say hi!");
     renderPet();
     updatePetAlert();
   } catch (e) { toast("⚠️ " + e.message); }
-});
+}
+$("#pet-hatch-btn").addEventListener("click", hatchPet);
+$("#pet-add-btn").addEventListener("click", hatchPet);
 
 $$(".pet-act").forEach((b) =>
   b.addEventListener("click", () => doPetAction(b.dataset.action))

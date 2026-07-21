@@ -47,9 +47,10 @@ From the **Pet** tab you **hatch your own pet** (solo — no friend required). Y
   someone else later.
 
 Either carer can later **end co-parenting** (the pet reverts to a solo pet owned by the
-owner). A user can own one pet and also co-parent a friend’s pet; the tab shows a picker
-when you care for more than one. Stats decay over real time (computed on read — no
-background job) and the pet earns XP/levels.
+owner). You can **hatch as many pets as you like** (up to a safety cap of 20) — use
+“Hatch another pet”, and the tab shows a picker to switch between the pets you own and
+co-parent. Stats decay over real time (computed on read — no background job) and each pet
+earns XP/levels.
 
 Data model: a `pets` table (`owner_id` + optional `coparent_id`) and a `pet_invites`
 table, driven by `hatch_pet` / `invite_coparent` / `respond_coparent` / `cancel_coparent`

@@ -162,7 +162,7 @@
         <!-- Incoming "co-parent my pet?" requests addressed to me -->
         <div id="pet-invites"></div>
 
-        <!-- Pet selector (shown only if I care for more than one pet) -->
+        <!-- Pet selector (shown when I care for more than one pet) -->
         <div class="pet-switch hidden" id="pet-switch">
           <label class="small muted">Pet</label>
           <select id="pet-select"></select>
@@ -224,6 +224,9 @@
           <!-- Co-parent status / controls (built in JS) -->
           <div class="pet-coparent" id="pet-coparent"></div>
         </div>
+
+        <!-- Hatch another pet (shown once you already have one) -->
+        <button class="btn ghost small pet-add-btn hidden" id="pet-add-btn">🥚 Hatch another pet</button>
       </div>
 
       <div class="panel" id="panel-you">
