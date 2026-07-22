@@ -181,6 +181,15 @@ function subscribeRealtime() {
       { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${uid}` },
       () => poll()
     )
+    // A reaction changed on a message I can see — update just that bubble.
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "message_reactions" },
+      (payload) => {
+        const mid = (payload.new && payload.new.message_id) || (payload.old && payload.old.message_id);
+        if (mid && document.querySelector(`.msg[data-mid="${mid}"]`)) refreshMsgReactions(mid);
+      }
+    )
     .subscribe();
 }
 
@@ -465,9 +474,11 @@ function openProfile(f) {
     b.className = "love-btn";
     b.innerHTML = `<span class="emoji">${lk.emoji}</span>${lk.label}`;
     b.addEventListener("click", async () => {
+      const name = friendLabel(f);
+      if (!confirm(`Send ${lk.label} ${lk.emoji} to ${name}?`)) return;
       try {
         await rpc("send_ping", { p_friend_id: f.id, p_kind: lk.kind });
-        toast(`${lk.emoji} Sent to ${friendLabel(f)}`);
+        toast(`✅ Successfully sent ${lk.label} ${lk.emoji} to ${name}`, 3000);
       } catch (e) { toast("⚠️ " + e.message); }
     });
     grid.appendChild(b);
@@ -553,10 +564,17 @@ $("#pf-remove").addEventListener("click", () => {
 
 /* ---------------- Chat ---------------- */
 let chatFriendId = null;
+let reactionsByMsg = {};    // messageId -> [{user_id, emoji}]
+let replyTarget = null;     // { id, preview } when replying to a message
+let actionbarMid = null;    // which message currently shows the react/reply bar
+const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 
 async function openChat(f) {
   chatFriendId = f.id;
   closeProfile();
+  reactionsByMsg = {};
+  clearReplyTarget();
+  closeMsgActions();
   $("#chat-avatar").innerHTML = avatarInner(f.avatar);
   $("#chat-name").textContent = friendLabel(f);
   $("#chat-log").innerHTML = '<div class="chat-empty">Loading…</div>';
@@ -568,6 +586,8 @@ async function openChat(f) {
 function closeChat() {
   $("#chat-modal").classList.add("hidden");
   chatFriendId = null;
+  clearReplyTarget();
+  closeMsgActions();
 }
 
 async function loadMessages(fid) {
@@ -579,6 +599,13 @@ async function loadMessages(fid) {
       .order("created_at", { ascending: true })
       .limit(300);
     if (error) throw error;
+    // Load reactions for these messages first, so bubbles render with them.
+    reactionsByMsg = {};
+    const ids = (data || []).map((m) => m.id);
+    if (ids.length) {
+      const { data: reacts } = await sb.from("message_reactions").select("*").in("message_id", ids);
+      (reacts || []).forEach((r) => (reactionsByMsg[r.message_id] ||= []).push(r));
+    }
     renderMessages(data || []);
     // mark their messages to me as read, then refresh unread badges
     await sb.from("messages").update({ read: true })
@@ -603,14 +630,115 @@ function appendMessage(m, scroll = true) {
   if (empty) empty.remove();
   const div = document.createElement("div");
   div.className = "msg " + (m.from_id === uid ? "me" : "them");
+  div.dataset.mid = m.id;
   let html = "";
+  if (m.reply_preview) html += `<div class="msg-reply">↩ ${escapeHtml(m.reply_preview)}</div>`;
   if (m.attachment_path) html += `<div class="msg-attach" data-loading="1">📎 loading…</div>`;
   if (m.body) html += `<span class="msg-body">${escapeHtml(m.body)}</span>`;
   html += `<span class="time">${fmtTime(m.created_at)}</span>`;
   div.innerHTML = html;
   log.appendChild(div);
   if (m.attachment_path) renderAttachment(div.querySelector(".msg-attach"), m);
+  renderMsgReactions(m.id);
+  // Tap a bubble (not a link/media/reaction) to react or reply.
+  div.addEventListener("click", (e) => {
+    if (e.target.closest("a, img, video, .reaction-badge")) return;
+    openMsgActions(div, m);
+  });
   if (scroll) log.scrollTop = log.scrollHeight;
+}
+
+/* Short text snapshot of a message, for reply previews. */
+function msgPreviewText(m) {
+  if (m.body) return m.body.slice(0, 60);
+  if ((m.attachment_type || "").startsWith("image/")) return "📷 Photo";
+  if ((m.attachment_type || "").startsWith("video/")) return "🎬 Video";
+  if (m.attachment_path) return "📎 File";
+  return "message";
+}
+
+/* ---- Message reactions ---- */
+function renderMsgReactions(mid) {
+  const div = document.querySelector(`.msg[data-mid="${mid}"]`);
+  if (!div) return;
+  let cont = div.querySelector(".msg-reactions");
+  const list = reactionsByMsg[mid] || [];
+  if (!list.length) { if (cont) cont.remove(); return; }
+  if (!cont) { cont = document.createElement("div"); cont.className = "msg-reactions"; div.appendChild(cont); }
+  const counts = {};
+  list.forEach((r) => { counts[r.emoji] = (counts[r.emoji] || 0) + 1; });
+  const mineEmoji = (list.find((r) => r.user_id === uid) || {}).emoji;
+  cont.innerHTML = Object.entries(counts)
+    .map(([e, c]) => `<span class="reaction-badge${e === mineEmoji ? " mine" : ""}" data-e="${e}">${e}${c > 1 ? `<i>${c}</i>` : ""}</span>`)
+    .join("");
+  cont.querySelectorAll(".reaction-badge").forEach((b) =>
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); reactToMessage(mid, b.dataset.e); })
+  );
+}
+
+async function reactToMessage(mid, emoji) {
+  const mine = (reactionsByMsg[mid] || []).find((r) => r.user_id === uid);
+  try {
+    if (mine && mine.emoji === emoji) {
+      await sb.from("message_reactions").delete().eq("message_id", mid).eq("user_id", uid);
+    } else {
+      await sb.from("message_reactions").upsert(
+        { message_id: mid, user_id: uid, emoji },
+        { onConflict: "message_id,user_id" }
+      );
+    }
+    await refreshMsgReactions(mid);
+  } catch (e) { toast("⚠️ " + e.message); }
+}
+
+async function refreshMsgReactions(mid) {
+  const { data } = await sb.from("message_reactions").select("*").eq("message_id", mid);
+  reactionsByMsg[mid] = data || [];
+  renderMsgReactions(mid);
+}
+
+/* ---- React / reply action bar (shown on tapping a message) ---- */
+function openMsgActions(div, m) {
+  if (actionbarMid === m.id) { closeMsgActions(); return; } // tap again to close
+  closeMsgActions();
+  actionbarMid = m.id;
+  const bar = document.createElement("div");
+  bar.className = "msg-actionbar " + (m.from_id === uid ? "me" : "them");
+  bar.innerHTML =
+    QUICK_REACTIONS.map((e) => `<button class="react-opt" data-e="${e}">${e}</button>`).join("") +
+    `<button class="react-reply" title="Reply">↩</button>`;
+  bar.querySelectorAll(".react-opt").forEach((b) =>
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); reactToMessage(m.id, b.dataset.e); closeMsgActions(); })
+  );
+  bar.querySelector(".react-reply").addEventListener("click", (ev) => {
+    ev.stopPropagation(); setReplyTarget(m); closeMsgActions();
+  });
+  div.after(bar);
+}
+function closeMsgActions() {
+  document.querySelectorAll(".msg-actionbar").forEach((b) => b.remove());
+  actionbarMid = null;
+}
+
+/* ---- Reply ---- */
+function setReplyTarget(m) {
+  const who = m.from_id === uid ? "You" : friendLabel(friendById(chatFriendId));
+  replyTarget = { id: m.id, preview: `${who}: ${msgPreviewText(m)}` };
+  showReplyPreview();
+  $("#chat-text").focus();
+}
+function showReplyPreview() {
+  const p = $("#chat-reply-preview");
+  p.innerHTML =
+    `<span class="attach-chip">↩ ${escapeHtml(replyTarget.preview)}</span>` +
+    `<button type="button" id="chat-reply-cancel" title="Cancel reply">✕</button>`;
+  p.classList.remove("hidden");
+  $("#chat-reply-cancel").addEventListener("click", clearReplyTarget);
+}
+function clearReplyTarget() {
+  replyTarget = null;
+  const p = $("#chat-reply-preview");
+  if (p) { p.classList.add("hidden"); p.innerHTML = ""; }
 }
 
 /* Short-lived signed URL for a private chat attachment (only participants can mint one). */
@@ -650,6 +778,7 @@ function fmtBytes(n) {
 }
 
 $("#chat-close").addEventListener("click", closeChat);
+$("#chat-log").addEventListener("click", (e) => { if (e.target.id === "chat-log") closeMsgActions(); });
 $("#chat-locate").addEventListener("click", () => {
   const f = friendById(chatFriendId);
   if (f && f.location) {
@@ -697,8 +826,10 @@ $("#chat-form").addEventListener("submit", async (e) => {
   const file = pendingFile;
   if ((!body && !file) || !chatFriendId) return;
 
+  const reply = replyTarget;
   input.value = "";
   clearPendingFile();
+  clearReplyTarget();
   const sendBtn = e.target.querySelector('button[type="submit"]');
   sendBtn.disabled = true;
   try {
@@ -716,9 +847,10 @@ $("#chat-form").addEventListener("submit", async (e) => {
         attachment_size: file.size,
       };
     }
+    const replyCols = reply ? { reply_to: reply.id, reply_preview: reply.preview } : {};
     const { data, error } = await sb
       .from("messages")
-      .insert({ from_id: uid, to_id: chatFriendId, body, ...attach })
+      .insert({ from_id: uid, to_id: chatFriendId, body, ...attach, ...replyCols })
       .select()
       .single();
     if (error) throw error;
@@ -727,6 +859,7 @@ $("#chat-form").addEventListener("submit", async (e) => {
     toast("⚠️ " + err.message);
     input.value = body;
     if (file) { pendingFile = file; showAttachPreview(file); }
+    if (reply) { replyTarget = reply; showReplyPreview(); }
   } finally {
     sendBtn.disabled = false;
   }

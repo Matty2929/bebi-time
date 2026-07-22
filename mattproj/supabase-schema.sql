@@ -82,6 +82,21 @@ alter table public.messages add column if not exists attachment_size bigint; -- 
 -- A message may now be attachment-only (no text), so allow an empty body.
 alter table public.messages alter column body set default '';
 
+-- Reply-to: a message can quote an earlier one. reply_preview is a small text snapshot
+-- of the quoted message so the bubble renders without a join.
+alter table public.messages add column if not exists reply_to bigint references public.messages(id) on delete set null;
+alter table public.messages add column if not exists reply_preview text;
+
+-- Emoji reactions on a message. One reaction per person per message (a new emoji
+-- replaces the old one; PK enforces it). Deleting the reaction row un-reacts.
+create table if not exists public.message_reactions (
+  message_id bigint not null references public.messages(id) on delete cascade,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  emoji      text not null,
+  created_at timestamptz not null default now(),
+  primary key (message_id, user_id)
+);
+
 -- A virtual pet. Every pet has an OWNER who created it and cares for it; the owner
 -- may invite ONE co-parent to raise it with them. Until (and unless) someone accepts,
 -- the owner cares for it solo. Stats are 0..100 and decay over real time; the stored
@@ -313,6 +328,7 @@ alter table public.locations       enable row level security;
 alter table public.pings           enable row level security;
 alter table public.friend_meta     enable row level security;
 alter table public.messages        enable row level security;
+alter table public.message_reactions enable row level security;
 alter table public.pets            enable row level security;
 alter table public.pet_invites     enable row level security;
 alter table public.notifications   enable row level security;
@@ -361,6 +377,28 @@ create policy messages_insert on public.messages for insert
 drop policy if exists messages_update on public.messages;
 create policy messages_update on public.messages for update
   using (to_id = auth.uid()) with check (to_id = auth.uid());
+
+-- message_reactions: you can READ every reaction on a message you're part of (yours
+-- and your friend's), but only add/change/remove your OWN reactions.
+drop policy if exists message_reactions_read on public.message_reactions;
+create policy message_reactions_read on public.message_reactions for select
+  using (exists (
+    select 1 from public.messages m
+    where m.id = message_reactions.message_id
+      and (m.from_id = auth.uid() or m.to_id = auth.uid())
+  ));
+drop policy if exists message_reactions_own on public.message_reactions;
+create policy message_reactions_own on public.message_reactions for all
+  using (user_id = auth.uid() and exists (
+    select 1 from public.messages m
+    where m.id = message_reactions.message_id
+      and (m.from_id = auth.uid() or m.to_id = auth.uid())
+  ))
+  with check (user_id = auth.uid() and exists (
+    select 1 from public.messages m
+    where m.id = message_reactions.message_id
+      and (m.from_id = auth.uid() or m.to_id = auth.uid())
+  ));
 
 -- pets: the owner and the accepted co-parent may READ the pet (needed for realtime).
 -- All writes go through the SECURITY DEFINER functions below, so no write policy.
@@ -905,6 +943,7 @@ grant usage on schema public to anon, authenticated;
 grant select, insert, update on public.locations to authenticated;
 grant select, update on public.profiles to authenticated;
 grant select, insert, update on public.messages to authenticated;
+grant select, insert, update, delete on public.message_reactions to authenticated;
 grant select, insert, update, delete on public.friend_meta to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
 grant execute on function public.get_state() to authenticated;
@@ -938,6 +977,7 @@ begin
   begin alter publication supabase_realtime add table public.pings;            exception when others then null; end;
   begin alter publication supabase_realtime add table public.friend_requests;  exception when others then null; end;
   begin alter publication supabase_realtime add table public.messages;         exception when others then null; end;
+  begin alter publication supabase_realtime add table public.message_reactions; exception when others then null; end;
   begin alter publication supabase_realtime add table public.pets;             exception when others then null; end;
   begin alter publication supabase_realtime add table public.pet_invites;      exception when others then null; end;
   begin alter publication supabase_realtime add table public.notifications;    exception when others then null; end;

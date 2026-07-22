@@ -350,6 +350,40 @@ input:focus { border-color: var(--accent); }
   line-height: 1.35; word-wrap: break-word; position: relative;
 }
 .msg .time { display: block; font-size: 10px; opacity: .6; margin-top: 3px; }
+.msg { cursor: pointer; }
+
+/* Quoted reply inside a bubble */
+.msg-reply {
+  font-size: 12px; line-height: 1.3; opacity: .85; margin-bottom: 5px;
+  padding: 5px 8px; border-left: 3px solid currentColor; border-radius: 6px;
+  background: rgba(255,255,255,.12); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.msg.them .msg-reply { background: rgba(255,255,255,.05); }
+
+/* Reaction badges under a bubble */
+.msg-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.reaction-badge {
+  display: inline-flex; align-items: center; gap: 3px; font-size: 13px; line-height: 1;
+  padding: 3px 7px; border-radius: 999px; background: var(--surface);
+  border: 1px solid var(--line); cursor: pointer;
+}
+.msg.me .reaction-badge { background: rgba(0,0,0,.25); border-color: rgba(255,255,255,.25); }
+.reaction-badge.mine { border-color: var(--accent); }
+.reaction-badge i { font-style: normal; font-size: 11px; opacity: .8; }
+
+/* React / reply action bar shown when a message is tapped */
+.msg-actionbar {
+  display: flex; gap: 2px; align-self: flex-start; margin: 2px 0 4px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+  padding: 4px 6px; box-shadow: var(--shadow);
+}
+.msg-actionbar.me { align-self: flex-end; }
+.msg-actionbar button {
+  border: none; background: transparent; cursor: pointer; font-size: 20px;
+  width: 34px; height: 34px; border-radius: 50%; color: var(--text);
+}
+.msg-actionbar button:active { transform: scale(.9); }
+.msg-actionbar .react-reply { font-size: 18px; border-left: 1px solid var(--line); border-radius: 0 999px 999px 0; }
 .msg.them { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 5px; }
 .msg.me {
   align-self: flex-end; color: #fff; border-bottom-right-radius: 5px;
