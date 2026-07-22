@@ -87,6 +87,15 @@ alter table public.messages alter column body set default '';
 alter table public.messages add column if not exists reply_to bigint references public.messages(id) on delete set null;
 alter table public.messages add column if not exists reply_preview text;
 
+-- Edit / unsend support:
+--  edited_at  — set when the sender edits the body.
+--  unsent     — "unsent for everyone": content cleared, both see a tombstone.
+--  hidden_from / hidden_to — "unsent for you": hides the message from just that side.
+alter table public.messages add column if not exists edited_at   timestamptz;
+alter table public.messages add column if not exists unsent      boolean not null default false;
+alter table public.messages add column if not exists hidden_from boolean not null default false;
+alter table public.messages add column if not exists hidden_to   boolean not null default false;
+
 -- Emoji reactions on a message. One reaction per person per message (a new emoji
 -- replaces the old one; PK enforces it). Deleting the reaction row un-reacts.
 create table if not exists public.message_reactions (
@@ -937,6 +946,53 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- ---------- Chat message: edit / unsend --------------------------------------
+
+-- Edit my own message (sender only, not already unsent).
+create or replace function public.edit_message(p_msg_id bigint, p_body text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare me uuid := auth.uid(); m public.messages%rowtype;
+begin
+  if me is null then raise exception 'Not authenticated'; end if;
+  select * into m from public.messages where id = p_msg_id;
+  if not found then raise exception 'Message not found.'; end if;
+  if m.from_id <> me then raise exception 'You can only edit your own messages.'; end if;
+  if m.unsent then raise exception 'This message was unsent.'; end if;
+  update public.messages set body = coalesce(p_body, ''), edited_at = now() where id = p_msg_id;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Unsend for EVERYONE (sender only): wipe the content, leave a tombstone both sides see.
+create or replace function public.unsend_message(p_msg_id bigint)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare me uuid := auth.uid(); m public.messages%rowtype;
+begin
+  if me is null then raise exception 'Not authenticated'; end if;
+  select * into m from public.messages where id = p_msg_id;
+  if not found then raise exception 'Message not found.'; end if;
+  if m.from_id <> me then raise exception 'You can only unsend your own messages.'; end if;
+  update public.messages
+    set unsent = true, body = '', reply_preview = null, edited_at = now(),
+        attachment_path = null, attachment_type = null, attachment_name = null, attachment_size = null
+    where id = p_msg_id;
+  delete from public.message_reactions where message_id = p_msg_id;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Unsend for ME only (either participant): hide it from my own view.
+create or replace function public.delete_message_for_me(p_msg_id bigint)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare me uuid := auth.uid(); m public.messages%rowtype;
+begin
+  if me is null then raise exception 'Not authenticated'; end if;
+  select * into m from public.messages where id = p_msg_id;
+  if not found then raise exception 'Message not found.'; end if;
+  if me = m.from_id then update public.messages set hidden_from = true where id = p_msg_id;
+  elsif me = m.to_id then update public.messages set hidden_to = true where id = p_msg_id;
+  else raise exception 'Not your conversation.'; end if;
+  return jsonb_build_object('ok', true);
+end $$;
+
 -- ---------- Grants ----------------------------------------------------------
 -- Let logged-in users call the functions and touch their own rows.
 grant usage on schema public to anon, authenticated;
@@ -944,6 +1000,9 @@ grant select, insert, update on public.locations to authenticated;
 grant select, update on public.profiles to authenticated;
 grant select, insert, update on public.messages to authenticated;
 grant select, insert, update, delete on public.message_reactions to authenticated;
+grant execute on function public.edit_message(bigint, text) to authenticated;
+grant execute on function public.unsend_message(bigint) to authenticated;
+grant execute on function public.delete_message_for_me(bigint) to authenticated;
 grant select, insert, update, delete on public.friend_meta to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
 grant execute on function public.get_state() to authenticated;

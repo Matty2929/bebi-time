@@ -163,16 +163,17 @@ function subscribeRealtime() {
       { event: "INSERT", schema: "public", table: "messages", filter: `to_id=eq.${uid}` },
       (payload) => onIncomingMessage(payload.new)
     )
-    // A message I SENT was updated (the other person read it) — update "Seen".
+    // A message I SENT changed (read receipt, or I edited/unsent it elsewhere).
     .on(
       "postgres_changes",
       { event: "UPDATE", schema: "public", table: "messages", filter: `from_id=eq.${uid}` },
-      (payload) => {
-        const m = payload.new;
-        if (!m) return;
-        msgReadState[m.id] = !!m.read;
-        if (chatFriendId === m.to_id && !$("#chat-modal").classList.contains("hidden")) renderReadReceipt();
-      }
+      (payload) => onMessageUpdate(payload.new)
+    )
+    // A message I RECEIVED changed (the sender edited or unsent it).
+    .on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "messages", filter: `to_id=eq.${uid}` },
+      (payload) => onMessageUpdate(payload.new)
     )
     // A pet I care for changed (co-parent fed/played/cleaned it) — refresh.
     .on(
@@ -224,6 +225,20 @@ function onIncomingMessage(m) {
     toast(`💬 ${f ? friendLabel(f) : "New message"}: ${preview}`, 3500);
     poll(); // refresh unread badges
   }
+}
+
+/* A message row changed (read / edited / unsent) — reflect it in the open chat. */
+function onMessageUpdate(m) {
+  if (!m) return;
+  msgReadState[m.id] = !!m.read;
+  const peer = m.from_id === uid ? m.to_id : m.from_id;
+  if (chatFriendId !== peer || $("#chat-modal").classList.contains("hidden")) return;
+  const prev = msgById[m.id];
+  const contentChanged = !prev || prev.unsent !== m.unsent || prev.edited_at !== m.edited_at ||
+    prev.hidden_from !== m.hidden_from || prev.hidden_to !== m.hidden_to || prev.body !== m.body;
+  msgById[m.id] = m;
+  if (contentChanged && document.querySelector(`.msg[data-mid="${m.id}"]`)) updateMessageBubble(m);
+  else renderReadReceipt();
 }
 
 function onFriendLocation(row) {
@@ -590,6 +605,8 @@ let reactionsByMsg = {};    // messageId -> [{user_id, emoji}]
 let replyTarget = null;     // { id, preview } when replying to a message
 let actionbarMid = null;    // which message currently shows the react/reply bar
 let msgReadState = {};       // messageId -> read? (for "Seen" receipts)
+let msgById = {};            // messageId -> message row (for edit/unsend actions)
+let editingMsg = null;       // the message currently being edited, if any
 let typingChannel = null;    // send-only channel to the open chat friend's inbox
 let typingInbox = null;      // my own inbox channel — hears anyone typing to me
 let typingByFriend = {};     // friendId -> currently typing to me?
@@ -601,6 +618,8 @@ async function openChat(f) {
   closeProfile();
   reactionsByMsg = {};
   msgReadState = {};
+  msgById = {};
+  editingMsg = null;
   clearReplyTarget();
   closeMsgActions();
   showTyping(false);
@@ -765,30 +784,54 @@ function insertDateDivider(iso) {
   $("#chat-log").appendChild(div);
 }
 
-function appendMessage(m, scroll = true) {
-  const log = $("#chat-log");
-  const empty = log.querySelector(".chat-empty");
-  if (empty) empty.remove();
-  msgReadState[m.id] = !!m.read;
-  insertDateDivider(m.created_at);
-  const div = document.createElement("div");
-  div.className = "msg " + (m.from_id === uid ? "me" : "them");
-  div.dataset.mid = m.id;
+/* Is this message hidden from MY view ("unsent for you")? */
+function hiddenForMe(m) {
+  return (m.from_id === uid && m.hidden_from) || (m.to_id === uid && m.hidden_to);
+}
+
+/* Inner HTML of a message bubble (tombstone when unsent). */
+function bubbleHtml(m) {
+  if (m.unsent) {
+    const who = m.from_id === uid ? "You unsent a message" : "This message was unsent";
+    return `<span class="msg-unsent">🚫 ${who}</span>` +
+      `<span class="time">${fmtTime(m.created_at)}</span>`;
+  }
   let html = "";
   if (m.reply_preview) html += `<div class="msg-reply">↩ ${escapeHtml(m.reply_preview)}</div>`;
   if (m.attachment_path) html += `<div class="msg-attach" data-loading="1">📎 loading…</div>`;
   if (m.body) html += `<span class="msg-body">${escapeHtml(m.body)}</span>`;
-  html += `<span class="time">${fmtTime(m.created_at)}</span>`;
-  div.innerHTML = html;
+  html += `<span class="time">${fmtTime(m.created_at)}${m.edited_at ? " · edited" : ""}</span>`;
+  return html;
+}
+
+function appendMessage(m, scroll = true) {
+  if (hiddenForMe(m)) return;
+  const log = $("#chat-log");
+  const empty = log.querySelector(".chat-empty");
+  if (empty) empty.remove();
+  msgReadState[m.id] = !!m.read;
+  msgById[m.id] = m;
+  insertDateDivider(m.created_at);
+  const div = document.createElement("div");
+  div.className = "msg " + (m.from_id === uid ? "me" : "them") + (m.unsent ? " unsent" : "");
+  div.dataset.mid = m.id;
+  div.innerHTML = bubbleHtml(m);
   log.appendChild(div);
-  if (m.attachment_path) renderAttachment(div.querySelector(".msg-attach"), m);
-  renderMsgReactions(m.id);
-  // Tap a bubble (not a link/media/reaction) to react or reply.
-  div.addEventListener("click", (e) => {
-    if (e.target.closest("a, img, video, .reaction-badge")) return;
-    openMsgActions(div, m);
-  });
+  if (m.attachment_path && !m.unsent) renderAttachment(div.querySelector(".msg-attach"), m);
+  if (!m.unsent) renderMsgReactions(m.id);
   if (scroll) { renderReadReceipt(); log.scrollTop = log.scrollHeight; }
+}
+
+/* Re-render an existing bubble in place after an edit / unsend / hide. */
+function updateMessageBubble(m) {
+  const div = document.querySelector(`.msg[data-mid="${m.id}"]`);
+  if (!div) return;
+  if (hiddenForMe(m)) { div.remove(); renderReadReceipt(); return; }
+  div.className = "msg " + (m.from_id === uid ? "me" : "them") + (m.unsent ? " unsent" : "");
+  div.innerHTML = bubbleHtml(m);
+  if (m.attachment_path && !m.unsent) renderAttachment(div.querySelector(".msg-attach"), m);
+  if (!m.unsent) renderMsgReactions(m.id);
+  renderReadReceipt();
 }
 
 /* Short text snapshot of a message, for reply previews. */
@@ -850,18 +893,82 @@ function openMsgActions(div, m) {
   bar.className = "msg-actionbar " + (m.from_id === uid ? "me" : "them");
   bar.innerHTML =
     QUICK_REACTIONS.map((e) => `<button class="react-opt" data-e="${e}">${e}</button>`).join("") +
-    `<button class="react-reply" title="Reply">↩</button>`;
+    `<button class="react-reply" title="Reply">↩</button>` +
+    `<button class="react-more" title="More">⋯</button>`;
   bar.querySelectorAll(".react-opt").forEach((b) =>
     b.addEventListener("click", (ev) => { ev.stopPropagation(); reactToMessage(m.id, b.dataset.e); closeMsgActions(); })
   );
   bar.querySelector(".react-reply").addEventListener("click", (ev) => {
     ev.stopPropagation(); setReplyTarget(m); closeMsgActions();
   });
+  bar.querySelector(".react-more").addEventListener("click", (ev) => {
+    ev.stopPropagation(); showMsgMenu(div, m);
+  });
   div.after(bar);
 }
 function closeMsgActions() {
-  document.querySelectorAll(".msg-actionbar").forEach((b) => b.remove());
+  document.querySelectorAll(".msg-actionbar, .msg-menu").forEach((b) => b.remove());
   actionbarMid = null;
+}
+
+/* The "⋯ More" menu: edit / unsend (mine) and unsend-for-me (either side). */
+function showMsgMenu(div, m) {
+  closeMsgActions();
+  const menu = document.createElement("div");
+  menu.className = "msg-menu " + (m.from_id === uid ? "me" : "them");
+  const items = [];
+  if (m.from_id === uid && !m.unsent) {
+    items.push(["✏️ Edit", () => startEditMessage(m)]);
+    items.push(["🚫 Unsend for everyone", () => unsendForEveryone(m)]);
+  }
+  items.push(["🗑️ Unsend for you", () => deleteForMe(m)]);
+  menu.innerHTML = items.map((it, i) => `<button data-i="${i}">${it[0]}</button>`).join("");
+  menu.querySelectorAll("button").forEach((b, i) =>
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); menu.remove(); actionbarMid = null; items[i][1](); })
+  );
+  div.after(menu);
+}
+
+function startEditMessage(m) {
+  editingMsg = m;
+  replyTarget = null;
+  $("#chat-text").value = m.body || "";
+  const p = $("#chat-reply-preview");
+  p.innerHTML = `<span class="attach-chip">✏️ Editing message</span>` +
+    `<button type="button" id="chat-edit-cancel" title="Cancel edit">✕</button>`;
+  p.classList.remove("hidden");
+  $("#chat-edit-cancel").addEventListener("click", cancelEdit);
+  $("#chat-text").focus();
+}
+function cancelEdit() {
+  editingMsg = null;
+  $("#chat-text").value = "";
+  hideComposerBar();
+}
+function hideComposerBar() {
+  const p = $("#chat-reply-preview");
+  if (p) { p.classList.add("hidden"); p.innerHTML = ""; }
+}
+
+async function unsendForEveryone(m) {
+  if (!confirm("Unsend this message for everyone? Its content will be removed for both of you.")) return;
+  try {
+    await rpc("unsend_message", { p_msg_id: m.id });
+    Object.assign(m, { unsent: true, body: "", attachment_path: null, reply_preview: null });
+    msgById[m.id] = m;
+    reactionsByMsg[m.id] = [];
+    updateMessageBubble(m);
+    haptic(12);
+  } catch (e) { toast("⚠️ " + e.message); }
+}
+async function deleteForMe(m) {
+  if (!confirm("Unsend this message for you? It stays visible for the other person.")) return;
+  try {
+    await rpc("delete_message_for_me", { p_msg_id: m.id });
+    const div = document.querySelector(`.msg[data-mid="${m.id}"]`);
+    if (div) div.remove();
+    renderReadReceipt();
+  } catch (e) { toast("⚠️ " + e.message); }
 }
 
 /* ---- Reply ---- */
@@ -881,8 +988,7 @@ function showReplyPreview() {
 }
 function clearReplyTarget() {
   replyTarget = null;
-  const p = $("#chat-reply-preview");
-  if (p) { p.classList.add("hidden"); p.innerHTML = ""; }
+  hideComposerBar();
 }
 
 /* Short-lived signed URL for a private chat attachment (only participants can mint one). */
@@ -922,7 +1028,15 @@ function fmtBytes(n) {
 }
 
 $("#chat-close").addEventListener("click", closeChat);
-$("#chat-log").addEventListener("click", (e) => { if (e.target.id === "chat-log") closeMsgActions(); });
+// Delegated: tap a bubble to open its react/reply/more bar; tap empty space to close.
+$("#chat-log").addEventListener("click", (e) => {
+  if (e.target.id === "chat-log") { closeMsgActions(); return; }
+  if (e.target.closest("a, img, video, .reaction-badge, .msg-actionbar, .msg-menu")) return;
+  const bubble = e.target.closest(".msg");
+  if (!bubble) return;
+  const m = msgById[bubble.dataset.mid];
+  if (m && !m.unsent) openMsgActions(bubble, m);
+});
 
 // Show a "jump to latest" button when scrolled up in a long chat.
 $("#chat-log").addEventListener("scroll", () => {
@@ -987,6 +1101,21 @@ $("#chat-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const input = $("#chat-text");
   const body = input.value.trim();
+
+  // Editing an existing message instead of sending a new one.
+  if (editingMsg) {
+    if (!body) { toast("⚠️ Message can't be empty"); return; }
+    const m = editingMsg;
+    editingMsg = null; hideComposerBar(); input.value = "";
+    try {
+      await rpc("edit_message", { p_msg_id: m.id, p_body: body });
+      Object.assign(m, { body, edited_at: new Date().toISOString() });
+      msgById[m.id] = m;
+      updateMessageBubble(m);
+    } catch (err) { toast("⚠️ " + err.message); startEditMessage(m); }
+    return;
+  }
+
   const file = pendingFile;
   if ((!body && !file) || !chatFriendId) return;
 

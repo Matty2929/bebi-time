@@ -403,7 +403,26 @@ input:focus { border-color: var(--accent); }
   width: 34px; height: 34px; border-radius: 50%; color: var(--text);
 }
 .msg-actionbar button:active { transform: scale(.9); }
-.msg-actionbar .react-reply { font-size: 18px; border-left: 1px solid var(--line); border-radius: 0 999px 999px 0; }
+.msg-actionbar .react-reply { font-size: 18px; border-left: 1px solid var(--line); }
+.msg-actionbar .react-more { font-size: 20px; border-radius: 0 999px 999px 0; }
+
+/* "⋯ More" dropdown menu */
+.msg-menu {
+  display: flex; flex-direction: column; align-self: flex-start; margin: 2px 0 6px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  overflow: hidden; box-shadow: var(--shadow); min-width: 180px;
+}
+.msg-menu.me { align-self: flex-end; }
+.msg-menu button {
+  border: none; background: transparent; color: var(--text); cursor: pointer;
+  padding: 12px 14px; text-align: left; font-size: 14px; font-weight: 600;
+}
+.msg-menu button:active { background: var(--surface-2); }
+
+/* Unsent tombstone */
+.msg.unsent { opacity: .85; }
+.msg-unsent { font-style: italic; opacity: .8; }
+.msg.unsent .msg-unsent { color: inherit; }
 .msg.them { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 5px; }
 .msg.me {
   align-self: flex-end; color: #fff; border-bottom-right-radius: 5px;
