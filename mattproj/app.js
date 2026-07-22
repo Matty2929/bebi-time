@@ -516,13 +516,15 @@ function openProfile(f) {
   $("#pf-partner-toggle").checked = !!f.partner;
   $("#pf-since").value = f.since || "";
   $("#pf-since-wrap").classList.toggle("hidden", !f.partner);
+  $("#pf-since-display").textContent = f.since ? "📅 " + fmtDate(f.since) : "";
 
   // partner badge + together counter
   $("#pf-partner-badge").classList.toggle("hidden", !f.partner);
   const together = $("#pf-together");
   if (f.partner && f.since) {
-    const days = Math.max(0, Math.floor((Date.now() - new Date(f.since).getTime()) / 86400000));
-    together.textContent = `💗 Together for ${days.toLocaleString()} day${days === 1 ? "" : "s"}`;
+    const days = Math.max(0, Math.floor((Date.now() - new Date(f.since + "T00:00:00").getTime()) / 86400000));
+    together.textContent =
+      `💗 Together since ${fmtDate(f.since)} · ${days.toLocaleString()} day${days === 1 ? "" : "s"}`;
     together.classList.remove("hidden");
   } else {
     together.classList.add("hidden");
@@ -637,6 +639,7 @@ $("#pf-partner-toggle").addEventListener("change", async (e) => {
 
 $("#pf-since").addEventListener("change", async () => {
   const f = friendById(profileFriendId);
+  $("#pf-since-display").textContent = $("#pf-since").value ? "📅 " + fmtDate($("#pf-since").value) : "";
   if (!f || !$("#pf-partner-toggle").checked) return;
   try {
     await rpc("set_partner", {
@@ -838,7 +841,7 @@ function insertDateDivider(iso) {
   if (key === now.toDateString()) label = "Today";
   else if (key === yest.toDateString()) label = "Yesterday";
   else label = d.toLocaleDateString([], {
-    month: "short", day: "numeric",
+    month: "long", day: "numeric",
     year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
   });
   const div = document.createElement("div");
@@ -1239,7 +1242,7 @@ function notifText(n) {
     case "message": return `${who} messaged you${n.detail ? `: <span class="muted">${escapeHtml(n.detail)}</span>` : ""} 💬`;
     case "reaction": return `${who} reacted ${escapeHtml(n.detail || "❤️")} to your message`;
     case "partner_set": return `${who} set you as their partner 💗`;
-    case "anniversary_set": return `${who} set your anniversary to ${escapeHtml(n.detail || "")} 💗`;
+    case "anniversary_set": return `${who} set your anniversary to ${escapeHtml(fmtDate(n.detail))} 💗`;
     default: return `${who} did something`;
   }
 }
@@ -2096,6 +2099,13 @@ function fmtAgo(ts) {
 function fmtTime(iso) {
   const d = new Date(iso);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+/* Spelled-out date, e.g. "April 25, 2021" (handles date-only strings safely). */
+function fmtDate(iso) {
+  if (!iso) return "";
+  const d = new Date(String(iso).length <= 10 ? iso + "T00:00:00" : iso);
+  if (isNaN(d.getTime())) return String(iso);
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 /* Couple banner: show how far apart you and your partner are, on the map. */
 function updateDuoBanner(friends) {

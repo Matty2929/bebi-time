@@ -383,6 +383,8 @@ input:focus { border-color: var(--accent); }
 }
 .theme-toggle button.active { border-color: var(--accent); background: var(--bg); color: var(--accent); }
 
+.pf-since-display { display: block; margin-top: 6px; font-size: 13px; color: var(--accent); font-weight: 600; }
+
 /* Photo/emoji options clip nicely (used by profile avatar override) */
 .avatar-opt { overflow: hidden; }
 .pf-view-avatar { max-height: 160px; overflow-y: auto; margin-top: 6px; }
