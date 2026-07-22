@@ -6,6 +6,9 @@
   <meta name="theme-color" content="#0e1015" />
   <title>Bebi Time — stay close</title>
 
+  <!-- Apply saved light/dark theme before paint to avoid a flash -->
+  <script>try{var t=localStorage.getItem('bebi-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+
   <!-- PWA: installable app shell -->
   <link rel="manifest" href="manifest.json" />
   <meta name="mobile-web-app-capable" content="yes" />
@@ -284,6 +287,13 @@
           </label>
           <p class="muted small">Get a nudge when your shared pet is hungry or needs care. Works while Bebi Time is open or installed on your home screen.</p>
         </div>
+        <div class="loc-mode">
+          <span class="small muted">Appearance</span>
+          <div class="theme-toggle" id="theme-toggle">
+            <button type="button" data-theme="dark">🌙 Dark</button>
+            <button type="button" data-theme="light">☀️ Light</button>
+          </div>
+        </div>
         <button class="btn danger ghost small logout" id="logout-btn">Log out</button>
       </div>
     </div>
@@ -316,12 +326,16 @@
         </div>
 
         <div class="profile-section">
-          <label class="small muted">Nickname (only you see this)
-            <div class="code-row">
-              <input id="pf-nickname" placeholder="Enter a Nickname" maxlength="30" />
-              <button class="btn ghost small" id="pf-nickname-save">Save</button>
-            </div>
+          <span class="small muted">How they look to you <b>(private — only you see this)</b></span>
+          <label class="small muted" style="margin-top:8px">Nickname
+            <input id="pf-nickname" placeholder="Enter a Nickname" maxlength="30" />
           </label>
+          <label class="small muted" style="margin-top:8px">Avatar</label>
+          <div class="avatar-picker pf-view-avatar" id="pf-view-avatar"></div>
+          <label class="small muted" style="margin-top:8px">Note
+            <input id="pf-note" placeholder="e.g. met at the coffee shop ☕" maxlength="120" />
+          </label>
+          <button class="btn primary small" id="pf-view-save" style="margin-top:10px">Save</button>
         </div>
 
         <div class="profile-section">

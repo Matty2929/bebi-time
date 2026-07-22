@@ -60,6 +60,10 @@ create table if not exists public.friend_meta (
   since     date,
   primary key (owner_id, friend_id)
 );
+-- Private "how this friend looks to ME" overrides (avatar emoji + a personal note).
+-- nickname is already above; partner/since are MUTUAL (set on both sides).
+alter table public.friend_meta add column if not exists custom_avatar text not null default '';
+alter table public.friend_meta add column if not exists custom_note   text not null default '';
 
 -- Direct messages between two friends.
 create table if not exists public.messages (
@@ -483,6 +487,8 @@ begin
       p.id,
       p.display_name as "displayName",
       coalesce(nullif(fm.nickname, ''), null) as nickname,
+      coalesce(nullif(fm.custom_avatar, ''), null) as "customAvatar",
+      coalesce(nullif(fm.custom_note, ''), null) as "customNote",
       coalesce(fm.partner, false) as partner,
       fm.since,
       p.avatar,
@@ -708,7 +714,27 @@ begin
 end;
 $$;
 
+-- Edit how a friend appears to ME only: nickname, an avatar override, and a note.
+-- (partner/since are NOT here — those are mutual, see set_partner.)
+create or replace function public.set_friend_view(
+  p_friend_id uuid, p_nickname text, p_avatar text, p_note text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare me uuid := auth.uid();
+begin
+  if me is null then raise exception 'Not authenticated'; end if;
+  if not public.are_friends(me, p_friend_id) then raise exception 'Not your friend.'; end if;
+  insert into public.friend_meta (owner_id, friend_id, nickname, custom_avatar, custom_note)
+    values (me, p_friend_id, coalesce(trim(p_nickname), ''),
+            coalesce(p_avatar, ''), coalesce(trim(p_note), ''))
+    on conflict (owner_id, friend_id) do update
+      set nickname = excluded.nickname,
+          custom_avatar = excluded.custom_avatar,
+          custom_note = excluded.custom_note;
+  return jsonb_build_object('ok', true);
+end $$;
+
 -- Mark a friend as your partner ♥ (and optionally your "together since" date).
+-- MUTUAL: it writes both sides, so your partner sees it on their end too.
 drop function if exists public.set_partner(uuid, boolean, date);
 create function public.set_partner(p_friend_id uuid, p_is_partner boolean, p_since_date date)
 returns jsonb
@@ -719,8 +745,14 @@ begin
   if not public.are_friends(me, p_friend_id) then
     raise exception 'Not your friend.';
   end if;
+  -- my side
   insert into public.friend_meta (owner_id, friend_id, partner, since)
     values (me, p_friend_id, coalesce(p_is_partner, false), p_since_date)
+    on conflict (owner_id, friend_id) do update
+      set partner = excluded.partner, since = excluded.since;
+  -- mirror to my partner's side (partner + anniversary are shared)
+  insert into public.friend_meta (owner_id, friend_id, partner, since)
+    values (p_friend_id, me, coalesce(p_is_partner, false), p_since_date)
     on conflict (owner_id, friend_id) do update
       set partner = excluded.partner, since = excluded.since;
   return jsonb_build_object('ok', true);
@@ -1011,6 +1043,7 @@ grant execute on function public.respond_friend_request(bigint, boolean) to auth
 grant execute on function public.remove_friend(uuid) to authenticated;
 grant execute on function public.send_ping(uuid, text) to authenticated;
 grant execute on function public.set_friend_nickname(uuid, text) to authenticated;
+grant execute on function public.set_friend_view(uuid, text, text, text) to authenticated;
 grant execute on function public.set_partner(uuid, boolean, date) to authenticated;
 grant select on public.pets to authenticated;
 grant select on public.pet_invites to authenticated;

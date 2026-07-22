@@ -222,7 +222,8 @@ function onIncomingMessage(m) {
     const preview = m.body
       ? escapeHtml(m.body.slice(0, 40))
       : (m.attachment_type || "").startsWith("image/") ? "📷 sent a photo" : "📎 sent a file";
-    toast(`💬 ${f ? friendLabel(f) : "New message"}: ${preview}`, 3500);
+    toast(`💬 ${f ? friendLabel(f) : "New message"}: ${preview}`, 3500, undefined,
+      f ? () => openChat(f) : undefined);
     poll(); // refresh unread badges
   }
 }
@@ -256,13 +257,35 @@ function onFriendLocation(row) {
   updateDuoBanner(currentFriends);
 }
 
-/* ---------------- Map ---------------- */
-function initMap() {
-  map = L.map("map", { zoomControl: false, attributionControl: true }).setView([20, 0], 2);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+/* ---------------- Theme (light / dark) ---------------- */
+const MAP_TILES = {
+  dark: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+  light: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+};
+let tileLayer = null;
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+}
+function applyMapTiles() {
+  if (!map) return;
+  if (tileLayer) map.removeLayer(tileLayer);
+  tileLayer = L.tileLayer(MAP_TILES[currentTheme()], {
     attribution: "&copy; OpenStreetMap &copy; CARTO",
     maxZoom: 20,
   }).addTo(map);
+}
+function setTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  try { localStorage.setItem("bebi-theme", theme); } catch (_) {}
+  const tc = document.querySelector('meta[name="theme-color"]');
+  if (tc) tc.setAttribute("content", theme === "light" ? "#eef1f7" : "#0e1015");
+  applyMapTiles();
+}
+
+/* ---------------- Map ---------------- */
+function initMap() {
+  map = L.map("map", { zoomControl: false, attributionControl: true }).setView([20, 0], 2);
+  applyMapTiles();
 
   map.on("dragstart", () => (followMe = false));
   map.on("click", (e) => {
@@ -425,7 +448,7 @@ function renderFriends(friends) {
       const label = escapeHtml(friendLabel(f));
       const typing = !!typingByFriend[f.id];
       li.innerHTML = `
-        <div class="avatar">${avatarInner(f.avatar)}<span class="dot ${f.online ? "online" : ""}"></span></div>
+        <div class="avatar">${avatarInner(friendAvatar(f))}<span class="dot ${f.online ? "online" : ""}"></span></div>
         <div class="friend-info">
           <div class="name">${f.partner ? '<span class="heart-badge">💗</span> ' : ""}${label} ${nickTag} ${f.mood ? `<span>${escapeHtml(f.mood)}</span>` : ""}</div>
           <div class="sub${typing ? " hidden" : ""}">${escapeHtml(sub)}</div>
@@ -451,6 +474,10 @@ function renderFriends(friends) {
 /* Display name for a friend = your private nickname if set, else their name. */
 function friendLabel(f) {
   return (f && (f.nickname || f.displayName)) || "Friend";
+}
+/* Avatar for a friend = your private override if set, else their real avatar. */
+function friendAvatar(f) {
+  return (f && (f.customAvatar || f.avatar)) || "🦊";
 }
 function friendById(id) {
   return friendsById[id] || currentFriends.find((f) => f.id === id) || null;
@@ -483,10 +510,12 @@ let profileFriendId = null;
 
 function openProfile(f) {
   profileFriendId = f.id;
-  $("#pf-avatar").innerHTML = avatarInner(f.avatar);
+  $("#pf-avatar").innerHTML = avatarInner(friendAvatar(f));
   $("#pf-name").textContent = friendLabel(f);
   $("#pf-status").textContent = f.online ? "🟢 Online now" : "Last seen " + fmtAgo(f.lastSeen);
   $("#pf-nickname").value = f.nickname || "";
+  $("#pf-note").value = f.customNote || "";
+  buildPfAvatarPicker(f);
   $("#pf-partner-toggle").checked = !!f.partner;
   $("#pf-since").value = f.since || "";
   $("#pf-since-wrap").classList.toggle("hidden", !f.partner);
@@ -550,15 +579,48 @@ $("#pf-message").addEventListener("click", () => {
   if (f) openChat(f);
 });
 
-$("#pf-nickname-save").addEventListener("click", async () => {
+/* Build the private avatar-override picker in a friend's profile. */
+function buildPfAvatarPicker(f) {
+  const wrap = $("#pf-view-avatar");
+  const current = f.customAvatar || "";
+  wrap.dataset.selected = current;
+  wrap.innerHTML = "";
+  // "Default" = show their own real avatar (clears the override)
+  const def = document.createElement("div");
+  def.className = "avatar-opt" + (!current ? " selected" : "");
+  def.title = "Use their own avatar";
+  def.dataset.val = "";
+  def.innerHTML = avatarInner(f.avatar);
+  wrap.appendChild(def);
+  AVATARS.forEach((a) => {
+    const el = document.createElement("div");
+    el.className = "avatar-opt" + (a === current ? " selected" : "");
+    el.textContent = a; el.dataset.val = a;
+    wrap.appendChild(el);
+  });
+  wrap.querySelectorAll(".avatar-opt").forEach((el) =>
+    el.addEventListener("click", () => {
+      wrap.querySelectorAll(".avatar-opt").forEach((x) => x.classList.remove("selected"));
+      el.classList.add("selected");
+      wrap.dataset.selected = el.dataset.val;
+    })
+  );
+}
+
+$("#pf-view-save").addEventListener("click", async () => {
   const f = friendById(profileFriendId);
   if (!f) return;
   try {
-    await rpc("set_friend_nickname", { p_friend_id: f.id, p_nickname: $("#pf-nickname").value.trim() });
-    toast("Nickname saved ✓");
+    await rpc("set_friend_view", {
+      p_friend_id: f.id,
+      p_nickname: $("#pf-nickname").value.trim(),
+      p_avatar: $("#pf-view-avatar").dataset.selected || "",
+      p_note: $("#pf-note").value.trim(),
+    });
+    toast("Saved ✓");
     await poll();
     const nf = friendById(f.id);
-    if (nf) { nf.nickname = $("#pf-nickname").value.trim(); $("#pf-name").textContent = friendLabel(nf); }
+    if (nf) openProfile(nf); // refresh with the new nickname/avatar/note
   } catch (e) { toast("⚠️ " + e.message); }
 });
 
@@ -623,7 +685,7 @@ async function openChat(f) {
   clearReplyTarget();
   closeMsgActions();
   showTyping(false);
-  $("#chat-avatar").innerHTML = avatarInner(f.avatar);
+  $("#chat-avatar").innerHTML = avatarInner(friendAvatar(f));
   $("#chat-name").textContent = friendLabel(f);
   $("#chat-log").innerHTML = '<div class="chat-empty">Loading…</div>';
   $("#chat-modal").classList.remove("hidden");
@@ -1191,9 +1253,32 @@ function renderNotifications(list, unread) {
     li.innerHTML =
       `<span class="notif-avatar">${avatarInner(n.actorAvatar)}</span>` +
       `<div class="notif-body"><div class="notif-text">${notifText(n)}</div>` +
-      `<div class="notif-time muted small">${fmtAgo(n.at)}</div></div>`;
+      `<div class="notif-time muted small">${fmtAgo(n.at)}</div></div>` +
+      `<span class="notif-go">›</span>`;
+    li.addEventListener("click", () => routeNotification(n));
     ul.appendChild(li);
   });
+}
+
+/* Open the relevant screen for a notification when it's tapped. */
+function activatePanel(panel) {
+  const tab = document.querySelector(`.sheet-tab[data-panel="${panel}"]`);
+  if (tab) tab.click();
+  expandSheet();
+}
+function routeNotification(n) {
+  switch (n.kind) {
+    case "ping":
+    case "friend_new": {
+      const f = friendById(n.actorId);
+      if (f) openProfile(f); else toast("They're no longer in your friends");
+      break;
+    }
+    case "friend_request": activatePanel("invite"); break;
+    case "coparent_invite":
+    case "coparent_accept": activatePanel("pet"); break;
+    default: break;
+  }
 }
 
 async function markNotifsRead() {
@@ -1239,7 +1324,7 @@ function updateFriendMarkers(friends) {
     if (!f.location) return;
     activeIds.add(String(f.id));
     const cls = f.partner ? "partner" : (f.online ? "" : "offline");
-    const icon = avatarIcon(f.avatar, cls);
+    const icon = avatarIcon(friendAvatar(f), cls);
     const popup = `<b>${f.partner ? "💗 " : ""}${escapeHtml(friendLabel(f))}</b><br>${
       f.online ? "Online now" : "Last seen " + fmtAgo(f.lastSeen)
     }${f.distance != null ? "<br>" + fmtDist(f.distance) + " away" : ""}`;
@@ -1746,7 +1831,7 @@ function showPing(p) {
   toast(msg, 4000);
 }
 let toastTimer = null;
-function toast(msg, ms = 2200, type) {
+function toast(msg, ms = 2200, type, onClick) {
   const t = $("#toast");
   t.innerHTML = msg;
   // Colour the toast by kind (auto-detected from the message if not given).
@@ -1754,6 +1839,10 @@ function toast(msg, ms = 2200, type) {
     (/⚠️|🔕/.test(msg) ? "error" :
      /✅|🎉|🤝|💗|Saved|Copied|Successfully/.test(msg) ? "success" : "");
   t.className = "toast" + (kind ? " " + kind : "");
+  t.style.cursor = onClick ? "pointer" : "";
+  t.onclick = onClick
+    ? () => { t.classList.add("hidden"); onClick(); }
+    : null;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
 }
@@ -1877,6 +1966,18 @@ $("#save-profile").addEventListener("click", async () => {
     toast("⚠️ " + err.message);
   }
 });
+
+/* Theme toggle */
+function updateThemeToggle() {
+  const t = currentTheme();
+  $$("#theme-toggle button").forEach((b) => b.classList.toggle("active", b.dataset.theme === t));
+}
+$$("#theme-toggle button").forEach((b) =>
+  b.addEventListener("click", () => { setTheme(b.dataset.theme); updateThemeToggle(); })
+);
+// Sync the toggle + theme-color meta on load (the <head> script already set the class).
+updateThemeToggle();
+{ const tc = document.querySelector('meta[name="theme-color"]'); if (tc) tc.setAttribute("content", currentTheme() === "light" ? "#eef1f7" : "#0e1015"); }
 
 $("#share-toggle").addEventListener("change", (e) => {
   sharing = e.target.checked;
