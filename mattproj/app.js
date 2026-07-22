@@ -808,6 +808,10 @@ async function loadMessages(fid) {
     // mark their messages to me as read, then refresh unread badges
     await sb.from("messages").update({ read: true })
       .eq("from_id", fid).eq("to_id", uid).eq("read", false);
+    // also clear message/reaction activity notifications from this friend
+    sb.from("notifications").update({ read: true })
+      .eq("user_id", uid).eq("actor_id", fid).in("kind", ["message", "reaction"]).eq("read", false)
+      .then(() => {});
     poll();
   } catch (e) {
     $("#chat-log").innerHTML = `<div class="chat-empty">⚠️ ${escapeHtml(e.message)}</div>`;
@@ -1235,6 +1239,10 @@ function notifText(n) {
     case "friend_new": return `You and ${who} are now friends 🤝`;
     case "coparent_invite": return `${who} invited you to co-parent ${escapeHtml(n.detail || "a pet")} 🐣`;
     case "coparent_accept": return `${who} accepted co-parenting ${escapeHtml(n.detail || "your pet")} 💗`;
+    case "message": return `${who} messaged you${n.detail ? `: <span class="muted">${escapeHtml(n.detail)}</span>` : ""} 💬`;
+    case "reaction": return `${who} reacted ${escapeHtml(n.detail || "❤️")} to your message`;
+    case "partner_set": return `${who} set you as their partner 💗`;
+    case "anniversary_set": return `${who} set your anniversary to ${escapeHtml(n.detail || "")} 💗`;
     default: return `${who} did something`;
   }
 }
@@ -1267,13 +1275,18 @@ function activatePanel(panel) {
   expandSheet();
 }
 function routeNotification(n) {
+  const f = friendById(n.actorId);
   switch (n.kind) {
     case "ping":
-    case "friend_new": {
-      const f = friendById(n.actorId);
+    case "friend_new":
+    case "partner_set":
+    case "anniversary_set":
       if (f) openProfile(f); else toast("They're no longer in your friends");
       break;
-    }
+    case "message":
+    case "reaction":
+      if (f) openChat(f); else toast("They're no longer in your friends");
+      break;
     case "friend_request": activatePanel("invite"); break;
     case "coparent_invite":
     case "coparent_accept": activatePanel("pet"); break;

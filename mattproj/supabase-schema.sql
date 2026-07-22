@@ -330,6 +330,37 @@ drop trigger if exists trg_notify_pet_invite on public.pet_invites;
 create trigger trg_notify_pet_invite after insert or update on public.pet_invites
   for each row execute function public.notify_on_pet_invite();
 
+-- A message arrived -> notify the recipient (detail = a short preview).
+create or replace function public.notify_on_message()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.notifications (user_id, kind, actor_id, detail)
+    values (new.to_id, 'message', new.from_id,
+      case when new.attachment_type like 'image/%' then '📷 Photo'
+           when new.attachment_path is not null   then '📎 File'
+           else left(coalesce(new.body, ''), 40) end);
+  return new;
+end $$;
+drop trigger if exists trg_notify_message on public.messages;
+create trigger trg_notify_message after insert on public.messages
+  for each row execute function public.notify_on_message();
+
+-- Someone reacted to my message -> notify me (detail = the emoji).
+create or replace function public.notify_on_reaction()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare sender uuid;
+begin
+  select from_id into sender from public.messages where id = new.message_id;
+  if sender is not null and sender <> new.user_id then
+    insert into public.notifications (user_id, kind, actor_id, detail)
+      values (sender, 'reaction', new.user_id, new.emoji);
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_notify_reaction on public.message_reactions;
+create trigger trg_notify_reaction after insert on public.message_reactions
+  for each row execute function public.notify_on_reaction();
+
 -- ---------- Row Level Security ----------------------------------------------
 -- With RLS on, the public anon key CANNOT read anyone's data except what these
 -- policies allow. This is what keeps locations private to friends.
@@ -739,12 +770,16 @@ drop function if exists public.set_partner(uuid, boolean, date);
 create function public.set_partner(p_friend_id uuid, p_is_partner boolean, p_since_date date)
 returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare me uuid := auth.uid();
+declare me uuid := auth.uid(); was_partner boolean; old_since date;
 begin
   if me is null then raise exception 'Not authenticated'; end if;
   if not public.are_friends(me, p_friend_id) then
     raise exception 'Not your friend.';
   end if;
+  -- remember prior state so we only notify on real changes
+  select partner, since into was_partner, old_since
+    from public.friend_meta where owner_id = me and friend_id = p_friend_id;
+
   -- my side
   insert into public.friend_meta (owner_id, friend_id, partner, since)
     values (me, p_friend_id, coalesce(p_is_partner, false), p_since_date)
@@ -755,6 +790,18 @@ begin
     values (p_friend_id, me, coalesce(p_is_partner, false), p_since_date)
     on conflict (owner_id, friend_id) do update
       set partner = excluded.partner, since = excluded.since;
+
+  -- notify my partner of the changes
+  if p_is_partner then
+    if not coalesce(was_partner, false) then
+      insert into public.notifications (user_id, kind, actor_id)
+        values (p_friend_id, 'partner_set', me);
+    end if;
+    if p_since_date is not null and p_since_date is distinct from old_since then
+      insert into public.notifications (user_id, kind, actor_id, detail)
+        values (p_friend_id, 'anniversary_set', me, p_since_date::text);
+    end if;
+  end if;
   return jsonb_build_object('ok', true);
 end;
 $$;
