@@ -107,6 +107,7 @@ input:focus { border-color: var(--accent); }
   pointer-events: none;
 }
 .topbar > * { pointer-events: auto; }
+.top-controls { display: flex; align-items: center; gap: 8px; }
 .me-chip {
   display: flex; align-items: center; gap: 10px;
   background: var(--surface); border: 1px solid var(--line);
@@ -167,10 +168,19 @@ input:focus { border-color: var(--accent); }
 .friend-meta { text-align: right; font-size: 11px; color: var(--muted); }
 .friend-actions { display: flex; gap: 6px; }
 .mini-btn {
-  border: none; background: var(--bg); color: var(--text);
+  border: none; background: var(--bg); color: var(--text); position: relative;
   width: 36px; height: 36px; border-radius: 10px; font-size: 16px; cursor: pointer;
 }
 .mini-btn:active { transform: scale(.9); }
+.mini-btn.typing::after {
+  content: ""; position: absolute; top: -3px; right: -3px;
+  width: 10px; height: 10px; border-radius: 50%; background: var(--accent);
+  border: 2px solid var(--surface-2); animation: typing-pulse 1s infinite;
+}
+@keyframes typing-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .5; transform: scale(1.25); }
+}
 
 .empty { text-align: center; padding: 30px 10px; }
 .empty p { margin: 4px 0; }
@@ -237,6 +247,8 @@ input:focus { border-color: var(--accent); }
   animation: pop .3s ease;
 }
 @keyframes pop { from { transform: translateX(-50%) translateY(-12px); opacity: 0; } }
+.toast.success { border-color: var(--green); box-shadow: 0 10px 40px rgba(52,211,153,.20), var(--shadow); }
+.toast.error   { border-color: var(--red);   box-shadow: 0 10px 40px rgba(248,113,113,.20), var(--shadow); }
 
 /* Leaflet marker avatars */
 .map-avatar {
@@ -256,6 +268,14 @@ input:focus { border-color: var(--accent); }
 /* ---------------- Friend list extras ---------------- */
 .friend-info .name .nick-tag { font-weight: 400; color: var(--muted); font-size: 12px; }
 .heart-badge { color: #ff6ea1; }
+.typing-hint { font-size: 13px; color: var(--accent); font-weight: 600; font-style: italic; }
+
+/* Leaflet "typing…" tooltip on a friend's marker */
+.leaflet-tooltip.typing-tip {
+  background: var(--accent); color: #fff; border: none; font-weight: 700; font-size: 12px;
+  border-radius: 999px; padding: 3px 9px; box-shadow: var(--shadow);
+}
+.leaflet-tooltip.typing-tip::before { border-top-color: var(--accent); }
 .unread-pill {
   background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
   min-width: 20px; height: 20px; border-radius: 999px; padding: 0 6px;
@@ -341,7 +361,7 @@ input:focus { border-color: var(--accent); }
 .notif-time { margin-top: 2px; }
 
 /* chat */
-.chat-sheet { height: 88vh; }
+.chat-sheet { height: 88vh; position: relative; }
 .chat-log {
   flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px;
 }
@@ -390,6 +410,45 @@ input:focus { border-color: var(--accent); }
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
 .chat-empty { text-align: center; color: var(--muted); margin: auto; font-size: 14px; }
+
+/* Date divider in chat */
+.chat-date {
+  align-self: center; margin: 6px 0; padding: 3px 12px; font-size: 11px; font-weight: 600;
+  color: var(--muted); background: var(--surface-2); border-radius: 999px;
+}
+
+/* Read receipt under my last message */
+.msg-receipt {
+  align-self: flex-end; font-size: 11px; color: var(--muted);
+  margin: -2px 4px 2px; font-weight: 600;
+}
+
+/* Typing indicator (animated dots in a bubble) */
+.chat-typing {
+  align-self: flex-start; display: inline-flex; gap: 4px; align-items: center;
+  background: var(--surface-2); border-bottom-left-radius: 5px; border-radius: 18px;
+  padding: 12px 14px; margin: 0 16px 6px;
+}
+.chat-typing span {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+.chat-typing span:nth-child(2) { animation-delay: .18s; }
+.chat-typing span:nth-child(3) { animation-delay: .36s; }
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: .5; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+
+/* Jump-to-latest button */
+.chat-scroll-btn {
+  position: absolute; right: 14px; bottom: 92px; z-index: 5;
+  width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--surface); color: var(--text); font-size: 20px; cursor: pointer;
+  box-shadow: var(--shadow); display: grid; place-items: center;
+  animation: pop .2s ease;
+}
+.chat-scroll-btn:active { transform: scale(.92); }
 .chat-input {
   display: flex; gap: 8px; align-items: center;
   padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
@@ -468,8 +527,19 @@ input:focus { border-color: var(--accent); }
 .pet-avatar {
   font-size: 84px; line-height: 1; filter: drop-shadow(0 8px 10px rgba(0,0,0,.35));
   animation: pet-idle 3s ease-in-out infinite; transform-origin: 50% 100%;
+  transition: font-size .45s cubic-bezier(.2,.8,.2,1);
 }
 .pet-avatar.bounce { animation: pet-bounce .5s ease; }
+.pet-avatar.stage-grown  { filter: drop-shadow(0 8px 10px rgba(0,0,0,.35)) drop-shadow(0 0 10px rgba(251,191,36,.35)); }
+.pet-avatar.stage-legend { filter: drop-shadow(0 8px 12px rgba(0,0,0,.4)) drop-shadow(0 0 16px rgba(255,183,87,.55)); }
+
+/* Growth-stage badge under the pet */
+.pet-stagebadge {
+  position: absolute; bottom: -4px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; font-weight: 800; padding: 2px 10px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--line); color: var(--text);
+  white-space: nowrap; z-index: 2;
+}
 @keyframes pet-idle {
   0%, 100% { transform: translateY(0) scale(1); }
   50% { transform: translateY(-6px) scale(1.02); }

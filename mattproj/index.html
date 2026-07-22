@@ -104,7 +104,10 @@
           <small id="me-status">Locating…</small>
         </div>
       </div>
-      <button class="icon-btn" id="recenter-btn" title="Recenter on me">◎</button>
+      <div class="top-controls">
+        <button class="icon-btn" id="fitall-btn" title="Frame everyone" aria-label="Frame everyone on the map">👥</button>
+        <button class="icon-btn" id="recenter-btn" title="Recenter on me" aria-label="Recenter on me">◎</button>
+      </div>
     </header>
 
     <div class="sheet" id="sheet">
@@ -189,6 +192,7 @@
           <div class="pet-stage">
             <div class="pet-avatar" id="pet-avatar">🐣</div>
             <div class="pet-mood-bubble" id="pet-mood">🙂</div>
+            <span class="pet-stagebadge hidden" id="pet-stagebadge"></span>
           </div>
           <div class="pet-name-row">
             <strong id="pet-name">Bebi</strong>
@@ -292,7 +296,7 @@
     <div class="overlay hidden" id="profile-modal">
       <div class="overlay-sheet">
         <div class="overlay-head">
-          <button class="icon-btn small-icon" id="profile-close">‹</button>
+          <button class="icon-btn small-icon" id="profile-close" aria-label="Back">‹</button>
           <span class="overlay-title">Profile</span>
           <span style="width:36px"></span>
         </div>
@@ -343,11 +347,15 @@
     <div class="overlay hidden" id="chat-modal">
       <div class="overlay-sheet chat-sheet">
         <div class="overlay-head">
-          <button class="icon-btn small-icon" id="chat-close">‹</button>
+          <button class="icon-btn small-icon" id="chat-close" aria-label="Back">‹</button>
           <span class="chat-peer"><span id="chat-avatar">🦊</span> <b id="chat-name">Name</b></span>
           <button class="icon-btn small-icon" id="chat-locate" title="View location">📍</button>
         </div>
         <div class="chat-log" id="chat-log"></div>
+        <div id="chat-typing" class="chat-typing hidden" aria-live="polite">
+          <span></span><span></span><span></span>
+        </div>
+        <button id="chat-scroll-btn" class="chat-scroll-btn hidden" title="Jump to latest" aria-label="Jump to latest message">↓</button>
         <div id="chat-reply-preview" class="chat-attach-preview hidden"></div>
         <div id="chat-attach-preview" class="chat-attach-preview hidden"></div>
         <form class="chat-input" id="chat-form">

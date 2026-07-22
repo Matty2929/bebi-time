@@ -163,6 +163,17 @@ function subscribeRealtime() {
       { event: "INSERT", schema: "public", table: "messages", filter: `to_id=eq.${uid}` },
       (payload) => onIncomingMessage(payload.new)
     )
+    // A message I SENT was updated (the other person read it) — update "Seen".
+    .on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "messages", filter: `from_id=eq.${uid}` },
+      (payload) => {
+        const m = payload.new;
+        if (!m) return;
+        msgReadState[m.id] = !!m.read;
+        if (chatFriendId === m.to_id && !$("#chat-modal").classList.contains("hidden")) renderReadReceipt();
+      }
+    )
     // A pet I care for changed (co-parent fed/played/cleaned it) — refresh.
     .on(
       "postgres_changes",
@@ -191,6 +202,13 @@ function subscribeRealtime() {
       }
     )
     .subscribe();
+
+  // My "typing inbox": any friend typing to me broadcasts here, so I see the hint
+  // on their row/marker even when their chat is closed.
+  if (typingInbox) { try { sb.removeChannel(typingInbox); } catch (_) {} }
+  typingInbox = sb.channel("typing-inbox-" + uid, { config: { broadcast: { self: false } } });
+  typingInbox.on("broadcast", { event: "typing" }, (msg) => onTypingSignal(msg && msg.payload));
+  typingInbox.subscribe();
 }
 
 function onIncomingMessage(m) {
@@ -384,16 +402,19 @@ function renderFriends(friends) {
     .forEach((f) => {
       const li = document.createElement("li");
       li.className = "friend-item";
+      li.dataset.fid = f.id;
       const dist = f.distance != null ? fmtDist(f.distance) : "";
       const seen = f.online ? "Online now" : "Last seen " + fmtAgo(f.lastSeen);
       const sub = f.note || f.mood || (f.location ? seen : "No location yet");
       const nickTag = f.nickname ? `<span class="nick-tag">(${escapeHtml(f.displayName)})</span>` : "";
       const label = escapeHtml(friendLabel(f));
+      const typing = !!typingByFriend[f.id];
       li.innerHTML = `
         <div class="avatar">${avatarInner(f.avatar)}<span class="dot ${f.online ? "online" : ""}"></span></div>
         <div class="friend-info">
           <div class="name">${f.partner ? '<span class="heart-badge">💗</span> ' : ""}${label} ${nickTag} ${f.mood ? `<span>${escapeHtml(f.mood)}</span>` : ""}</div>
-          <div class="sub">${escapeHtml(sub)}</div>
+          <div class="sub${typing ? " hidden" : ""}">${escapeHtml(sub)}</div>
+          <div class="typing-hint${typing ? "" : " hidden"}">✍️ typing…</div>
         </div>
         <div class="friend-meta">
           ${dist ? `<div>${dist}</div>` : ""}
@@ -401,7 +422,7 @@ function renderFriends(friends) {
         </div>
         <div class="friend-actions">
           ${f.unread ? `<span class="unread-pill">${f.unread}</span>` : ""}
-          <button class="mini-btn" data-act="chat" title="Message">💬</button>
+          <button class="mini-btn${typing ? " typing" : ""}" data-act="chat" title="Message">💬</button>
         </div>`;
       li.querySelector('[data-act="chat"]').addEventListener("click", (e) => {
         e.stopPropagation();
@@ -478,6 +499,7 @@ function openProfile(f) {
       if (!confirm(`Send ${lk.label} ${lk.emoji} to ${name}?`)) return;
       try {
         await rpc("send_ping", { p_friend_id: f.id, p_kind: lk.kind });
+        haptic(20);
         toast(`✅ Successfully sent ${lk.label} ${lk.emoji} to ${name}`, 3000);
       } catch (e) { toast("⚠️ " + e.message); }
     });
@@ -567,18 +589,26 @@ let chatFriendId = null;
 let reactionsByMsg = {};    // messageId -> [{user_id, emoji}]
 let replyTarget = null;     // { id, preview } when replying to a message
 let actionbarMid = null;    // which message currently shows the react/reply bar
+let msgReadState = {};       // messageId -> read? (for "Seen" receipts)
+let typingChannel = null;    // send-only channel to the open chat friend's inbox
+let typingInbox = null;      // my own inbox channel — hears anyone typing to me
+let typingByFriend = {};     // friendId -> currently typing to me?
+let typingExpire = {};       // friendId -> auto-clear timer
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 
 async function openChat(f) {
   chatFriendId = f.id;
   closeProfile();
   reactionsByMsg = {};
+  msgReadState = {};
   clearReplyTarget();
   closeMsgActions();
+  showTyping(false);
   $("#chat-avatar").innerHTML = avatarInner(f.avatar);
   $("#chat-name").textContent = friendLabel(f);
   $("#chat-log").innerHTML = '<div class="chat-empty">Loading…</div>';
   $("#chat-modal").classList.remove("hidden");
+  joinTypingChannel(f.id);
   await loadMessages(f.id);
   $("#chat-text").focus();
 }
@@ -588,6 +618,93 @@ function closeChat() {
   chatFriendId = null;
   clearReplyTarget();
   closeMsgActions();
+  leaveTypingChannel();
+}
+
+/* "Seen / Sent" receipt under the last message — only when the newest message is mine. */
+function renderReadReceipt() {
+  const log = $("#chat-log");
+  const old = log.querySelector(".msg-receipt");
+  if (old) old.remove();
+  const msgs = log.querySelectorAll(".msg");
+  if (!msgs.length) return;
+  const last = msgs[msgs.length - 1];
+  if (!last.classList.contains("me")) return; // last message isn't mine → no receipt
+  const el = document.createElement("div");
+  el.className = "msg-receipt";
+  el.textContent = msgReadState[last.dataset.mid] ? "✓✓ Seen" : "✓ Sent";
+  log.appendChild(el);
+}
+
+/* ---- Typing indicator (realtime broadcast — ephemeral, no database) ---- */
+let typingSentAt = 0, typingStopTimer = null, typingHideTimer = null;
+
+function joinTypingChannel(friendId) {
+  leaveTypingChannel();
+  // Send-only channel to THIS friend's inbox; they receive it globally.
+  typingChannel = sb.channel("typing-inbox-" + friendId, { config: { broadcast: { self: false } } });
+  typingChannel.subscribe();
+}
+function leaveTypingChannel() {
+  if (typingChannel) { try { sb.removeChannel(typingChannel); } catch (_) {} typingChannel = null; }
+  clearTimeout(typingStopTimer); clearTimeout(typingHideTimer);
+  showTyping(false);
+}
+function sendTyping(isTyping) {
+  if (!typingChannel) return;
+  typingChannel.send({ type: "broadcast", event: "typing", payload: { from: uid, typing: isTyping } });
+}
+
+/* A friend is (or stopped) typing to me — update in-chat bubble + row/marker hints. */
+function onTypingSignal(p) {
+  if (!p || !p.from) return;
+  const fid = p.from, on = !!p.typing;
+  typingByFriend[fid] = on;
+  clearTimeout(typingExpire[fid]);
+  if (on) {
+    typingExpire[fid] = setTimeout(() => {
+      typingByFriend[fid] = false;
+      applyTypingHint(fid, false);
+      if (chatFriendId === fid) showTyping(false);
+    }, 4500);
+  }
+  if (chatFriendId === fid && !$("#chat-modal").classList.contains("hidden")) showTyping(on);
+  applyTypingHint(fid, on);
+}
+
+/* Show/hide the "typing…" hint on a friend's list row and map marker. */
+function applyTypingHint(fid, on) {
+  const li = document.querySelector(`.friend-item[data-fid="${fid}"]`);
+  if (li) {
+    const hint = li.querySelector(".typing-hint");
+    const sub = li.querySelector(".sub");
+    if (hint) hint.classList.toggle("hidden", !on);
+    if (sub) sub.classList.toggle("hidden", on);
+    const chatBtn = li.querySelector('.mini-btn[data-act="chat"]');
+    if (chatBtn) chatBtn.classList.toggle("typing", on);
+  }
+  const mk = markers[fid];
+  if (mk) {
+    if (on) {
+      if (!mk.getTooltip()) {
+        mk.bindTooltip("💬 typing…", { permanent: true, direction: "top", offset: [0, -46], className: "typing-tip" });
+      }
+      mk.openTooltip();
+    } else if (mk.getTooltip()) {
+      mk.unbindTooltip();
+    }
+  }
+}
+function showTyping(on) {
+  const el = $("#chat-typing");
+  if (!el) return;
+  el.classList.toggle("hidden", !on);
+  clearTimeout(typingHideTimer);
+  if (on) {
+    typingHideTimer = setTimeout(() => el.classList.add("hidden"), 4500);
+    const log = $("#chat-log");
+    if (log.scrollHeight - log.scrollTop - log.clientHeight < 120) log.scrollTop = log.scrollHeight;
+  }
 }
 
 async function loadMessages(fid) {
@@ -616,18 +733,44 @@ async function loadMessages(fid) {
   }
 }
 
+let lastMsgDay = null;
 function renderMessages(msgs) {
   const log = $("#chat-log");
+  lastMsgDay = null;
   if (!msgs.length) { log.innerHTML = '<div class="chat-empty">Say hi 👋💕</div>'; return; }
   log.innerHTML = "";
   msgs.forEach((m) => appendMessage(m, false));
+  renderReadReceipt();
   log.scrollTop = log.scrollHeight;
+}
+
+/* Insert a "Today / Yesterday / Mon 3" divider when the day changes. */
+function insertDateDivider(iso) {
+  const d = new Date(iso);
+  const key = d.toDateString();
+  if (key === lastMsgDay) return;
+  lastMsgDay = key;
+  const now = new Date();
+  const yest = new Date(); yest.setDate(now.getDate() - 1);
+  let label;
+  if (key === now.toDateString()) label = "Today";
+  else if (key === yest.toDateString()) label = "Yesterday";
+  else label = d.toLocaleDateString([], {
+    month: "short", day: "numeric",
+    year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+  });
+  const div = document.createElement("div");
+  div.className = "chat-date";
+  div.textContent = label;
+  $("#chat-log").appendChild(div);
 }
 
 function appendMessage(m, scroll = true) {
   const log = $("#chat-log");
   const empty = log.querySelector(".chat-empty");
   if (empty) empty.remove();
+  msgReadState[m.id] = !!m.read;
+  insertDateDivider(m.created_at);
   const div = document.createElement("div");
   div.className = "msg " + (m.from_id === uid ? "me" : "them");
   div.dataset.mid = m.id;
@@ -645,7 +788,7 @@ function appendMessage(m, scroll = true) {
     if (e.target.closest("a, img, video, .reaction-badge")) return;
     openMsgActions(div, m);
   });
-  if (scroll) log.scrollTop = log.scrollHeight;
+  if (scroll) { renderReadReceipt(); log.scrollTop = log.scrollHeight; }
 }
 
 /* Short text snapshot of a message, for reply previews. */
@@ -686,6 +829,7 @@ async function reactToMessage(mid, emoji) {
         { message_id: mid, user_id: uid, emoji },
         { onConflict: "message_id,user_id" }
       );
+      haptic(12);
     }
     await refreshMsgReactions(mid);
   } catch (e) { toast("⚠️ " + e.message); }
@@ -779,6 +923,26 @@ function fmtBytes(n) {
 
 $("#chat-close").addEventListener("click", closeChat);
 $("#chat-log").addEventListener("click", (e) => { if (e.target.id === "chat-log") closeMsgActions(); });
+
+// Show a "jump to latest" button when scrolled up in a long chat.
+$("#chat-log").addEventListener("scroll", () => {
+  const log = $("#chat-log");
+  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+  $("#chat-scroll-btn").classList.toggle("hidden", nearBottom);
+});
+$("#chat-scroll-btn").addEventListener("click", () => {
+  const log = $("#chat-log");
+  log.scrollTo({ top: log.scrollHeight, behavior: "smooth" });
+});
+
+// Broadcast "typing…" to the other person (throttled), auto-stopping when idle.
+$("#chat-text").addEventListener("input", () => {
+  if (!typingChannel) return;
+  const now = Date.now();
+  if (now - typingSentAt > 1500) { typingSentAt = now; sendTyping(true); }
+  clearTimeout(typingStopTimer);
+  typingStopTimer = setTimeout(() => { sendTyping(false); typingSentAt = 0; }, 2500);
+});
 $("#chat-locate").addEventListener("click", () => {
   const f = friendById(chatFriendId);
   if (f && f.location) {
@@ -830,6 +994,7 @@ $("#chat-form").addEventListener("submit", async (e) => {
   input.value = "";
   clearPendingFile();
   clearReplyTarget();
+  sendTyping(false); typingSentAt = 0; clearTimeout(typingStopTimer);
   const sendBtn = e.target.querySelector('button[type="submit"]');
   sendBtn.disabled = true;
   try {
@@ -854,6 +1019,7 @@ $("#chat-form").addEventListener("submit", async (e) => {
       .select()
       .single();
     if (error) throw error;
+    haptic(10);
     appendMessage(data);
   } catch (err) {
     toast("⚠️ " + err.message);
@@ -976,6 +1142,15 @@ const PET_FX = {
 };
 
 function petLevel(xp) { return 1 + Math.floor((xp || 0) / 100); }
+
+/* Growth stage by level — the pet visibly grows as it earns XP. */
+function petStage(level) {
+  if (level >= 12) return { name: "Legend", accessory: "👑", scale: 1.5, cls: "legend" };
+  if (level >= 8)  return { name: "Grown",  accessory: "⭐", scale: 1.32, cls: "grown" };
+  if (level >= 4)  return { name: "Kid",    accessory: "",   scale: 1.16, cls: "kid" };
+  if (level >= 2)  return { name: "Baby",   accessory: "",   scale: 1.0,  cls: "baby" };
+  return { name: "Hatchling", accessory: "", scale: 0.86, cls: "hatchling" };
+}
 
 /* Streak stays "alive" only if you were both together today or yesterday. */
 function todayStr() {
@@ -1155,10 +1330,19 @@ function buildPetSelect(pets) {
 function renderPetCard(pet) {
   const partner = pet.partnerId ? friendById(pet.partnerId) : null;
   $("#pet-card").classList.remove("hidden");
-  $("#pet-avatar").textContent = pet.species || "🐣";
+  const av = $("#pet-avatar");
+  av.textContent = pet.species || "🐣";
   $("#pet-mood").textContent = petMood(pet);
   $("#pet-name").textContent = pet.name || "Bebi";
-  $("#pet-level").textContent = "Lv " + petLevel(pet.xp);
+  const lvl = petLevel(pet.xp);
+  // Growth stage: scale the pet + label it, so leveling up is visible.
+  const stage = petStage(lvl);
+  av.style.fontSize = Math.round(74 * stage.scale) + "px";
+  av.className = "pet-avatar stage-" + stage.cls;
+  const badge = $("#pet-stagebadge");
+  badge.textContent = stage.name + (stage.accessory ? " " + stage.accessory : "");
+  badge.classList.remove("hidden");
+  $("#pet-level").textContent = "Lv " + lvl;
   $("#pet-level").title = (pet.xp % 100) + " / 100 XP";
   const streakEl = $("#pet-streak");
   if (pet.streak > 0 && streakAlive(pet)) {
@@ -1294,14 +1478,27 @@ function petFloat(emoji) {
 
 async function doPetAction(action) {
   if (petSelectedId == null) return;
+  const before = currentPet();
+  const oldLevel = before ? petLevel(before.xp) : 1;
   try {
     const pet = await rpc("pet_action", { p_pet_id: petSelectedId, p_action: action });
     petsById[pet.id] = pet;
     renderPetCard(pet);
     updatePetAlert();
+    haptic(12);
     const av = $("#pet-avatar");
     av.classList.remove("bounce"); void av.offsetWidth; av.classList.add("bounce");
     petFloat(PET_FX[action] || "✨");
+    // Celebrate a level-up (and a new growth stage).
+    const newLevel = petLevel(pet.xp);
+    if (newLevel > oldLevel) {
+      haptic([20, 40, 20]);
+      const grew = petStage(newLevel).cls !== petStage(oldLevel).cls;
+      const st = petStage(newLevel);
+      toast(grew
+        ? `🎉 ${pet.name || "Your pet"} grew into a ${st.name}! (Lv ${newLevel})`
+        : `🎉 ${pet.name || "Your pet"} reached Level ${newLevel}!`, 3200);
+    }
   } catch (e) { toast("⚠️ " + e.message); }
 }
 
@@ -1420,12 +1617,21 @@ function showPing(p) {
   toast(msg, 4000);
 }
 let toastTimer = null;
-function toast(msg, ms = 2200) {
+function toast(msg, ms = 2200, type) {
   const t = $("#toast");
   t.innerHTML = msg;
-  t.classList.remove("hidden");
+  // Colour the toast by kind (auto-detected from the message if not given).
+  const kind = type ||
+    (/⚠️|🔕/.test(msg) ? "error" :
+     /✅|🎉|🤝|💗|Saved|Copied|Successfully/.test(msg) ? "success" : "");
+  t.className = "toast" + (kind ? " " + kind : "");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
+}
+
+/* Tiny haptic tap on supported devices — makes actions feel responsive. */
+function haptic(pattern = 12) {
+  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (_) {}
 }
 
 /* ---------------- Invite panel ---------------- */
@@ -1570,6 +1776,8 @@ async function logout() {
   if (pollTimer) clearInterval(pollTimer);
   if (geoWatch) navigator.geolocation.clearWatch(geoWatch);
   if (rtChannel) { try { sb.removeChannel(rtChannel); } catch {} rtChannel = null; }
+  if (typingInbox) { try { sb.removeChannel(typingInbox); } catch {} typingInbox = null; }
+  if (typingChannel) { try { sb.removeChannel(typingChannel); } catch {} typingChannel = null; }
   location.reload();
 }
 
@@ -1597,6 +1805,18 @@ $("#recenter-btn").addEventListener("click", () => {
   followMe = true;
   if (myMarker) map.setView(myMarker.getLatLng(), 16, { animate: true });
   else toast("Waiting for your location…");
+});
+
+/* Frame everyone: fit the map to you + all friends who are sharing a location. */
+$("#fitall-btn").addEventListener("click", () => {
+  const pts = [];
+  if (myLatLng) pts.push([myLatLng.lat, myLatLng.lng]);
+  currentFriends.forEach((f) => { if (f.location) pts.push([f.location.lat, f.location.lng]); });
+  if (!pts.length) { toast("No one's sharing a location yet"); return; }
+  followMe = false;
+  collapseSheet();
+  if (pts.length === 1) map.setView(pts[0], 15, { animate: true });
+  else map.fitBounds(pts, { padding: [70, 70], maxZoom: 16, animate: true });
 });
 
 /* ---------------- Utils ---------------- */
