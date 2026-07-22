@@ -230,8 +230,8 @@ input:focus { border-color: var(--accent); }
 
 /* Toast / ping */
 .toast {
-  position: absolute; top: 74px; left: 50%; transform: translateX(-50%);
-  z-index: 900; background: var(--surface); border: 1px solid var(--line);
+  position: fixed; top: 74px; left: 50%; transform: translateX(-50%);
+  z-index: 2000; background: var(--surface); border: 1px solid var(--line);
   padding: 12px 18px; border-radius: 999px; box-shadow: var(--shadow);
   font-weight: 600; display: flex; align-items: center; gap: 10px;
   animation: pop .3s ease;

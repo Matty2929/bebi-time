@@ -107,8 +107,6 @@
       <button class="icon-btn" id="recenter-btn" title="Recenter on me">◎</button>
     </header>
 
-    <div id="toast" class="toast hidden"></div>
-
     <div class="sheet" id="sheet">
       <div class="sheet-handle" id="sheet-handle"></div>
 
@@ -286,6 +284,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Toast lives OUTSIDE #app so it stacks above the profile/chat overlays -->
+  <div id="toast" class="toast hidden"></div>
 
     <!-- ============ FRIEND / PARTNER PROFILE ============ -->
     <div class="overlay hidden" id="profile-modal">
