@@ -187,11 +187,11 @@ function subscribeRealtime() {
       { event: "*", schema: "public", table: "pet_invites", filter: `to_id=eq.${uid}` },
       () => poll()
     )
-    // A new activity/notification for me — refresh the feed + badge.
+    // A new activity/notification for me — pop a live toast AND refresh the feed + badge.
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${uid}` },
-      () => poll()
+      (payload) => { showActivityToast(payload.new); poll(); }
     )
     // A reaction changed on a message I can see — update just that bubble.
     .on(
@@ -218,13 +218,9 @@ function onIncomingMessage(m) {
     appendMessage(m);
     sb.from("messages").update({ read: true }).eq("id", m.id).then(() => {});
   } else {
-    const f = friendById(m.from_id);
-    const preview = m.body
-      ? escapeHtml(m.body.slice(0, 40))
-      : (m.attachment_type || "").startsWith("image/") ? "📷 sent a photo" : "📎 sent a file";
-    toast(`💬 ${f ? friendLabel(f) : "New message"}: ${preview}`, 3500, undefined,
-      f ? () => openChat(f) : undefined);
-    poll(); // refresh unread badges
+    // The live "messaged you" toast now comes from the notifications realtime event
+    // (showActivityToast); here we just refresh unread badges.
+    poll();
   }
 }
 
@@ -414,7 +410,8 @@ async function poll() {
     updatePetAlert();
     maybePetNotify();
     renderNotifications(state.notifications || [], state.notifsUnread || 0);
-    (state.pings || []).forEach(showPing);
+    // Live ping toasts now come from the notifications realtime event (showActivityToast),
+    // so we no longer double-toast pings here.
   } catch (err) {
     if (/not authenticated|jwt|token/i.test(err.message)) logout();
     else console.warn("poll error:", err.message);
@@ -1277,21 +1274,36 @@ function activatePanel(panel) {
 function routeNotification(n) {
   const f = friendById(n.actorId);
   switch (n.kind) {
-    case "ping":
+    case "ping": activatePanel("activity"); break;
     case "friend_new":
     case "partner_set":
     case "anniversary_set":
-      if (f) openProfile(f); else toast("They're no longer in your friends");
+      if (f) openProfile(f); else activatePanel("activity");
       break;
     case "message":
     case "reaction":
-      if (f) openChat(f); else toast("They're no longer in your friends");
+      if (f) openChat(f); else activatePanel("activity");
       break;
     case "friend_request": activatePanel("invite"); break;
     case "coparent_invite":
     case "coparent_accept": activatePanel("pet"); break;
-    default: break;
+    default: activatePanel("activity"); break;
   }
+}
+
+/* Live pop-up (toast) for an incoming activity/notification realtime row. */
+function showActivityToast(n) {
+  if (!n || !n.kind) return;
+  // Don't pop a message/reaction toast if I'm already looking at that chat.
+  if ((n.kind === "message" || n.kind === "reaction") &&
+      chatFriendId === n.actor_id && !$("#chat-modal").classList.contains("hidden")) return;
+  const f = friendById(n.actor_id);
+  const nn = {
+    kind: n.kind, detail: n.detail, actorId: n.actor_id,
+    actorName: f ? friendLabel(f) : "Someone",
+    actorAvatar: f ? friendAvatar(f) : "🔔",
+  };
+  toast(`${avatarTiny(nn.actorAvatar)} ${notifText(nn)}`, 3800, undefined, () => routeNotification(nn));
 }
 
 async function markNotifsRead() {
