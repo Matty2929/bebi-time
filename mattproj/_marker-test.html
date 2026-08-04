@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="styles.css">
+<style>
+  body{background:#10131a;display:flex;gap:50px;padding:70px;align-items:center;}
+  .cell{display:flex;flex-direction:column;align-items:center;gap:8px;color:#8b93a7;font:12px sans-serif;}
+  /* mimic leaflet outer wrapper (positioned, no visual style) */
+  .leaflet-marker-icon{}
+</style></head>
+<body>
+  <!-- portrait photo (taller than wide) -->
+  <div class="cell">
+    <div class="leaflet-marker-icon"><div class="map-avatar me photo"><img class="avatar-img" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='200'%3E%3Crect width='120' height='200' fill='%23335'/%3E%3Ccircle cx='60' cy='70' r='34' fill='%23fc9'/%3E%3Crect x='30' y='110' width='60' height='90' rx='24' fill='%237af'/%3E%3C/svg%3E"></div></div>
+    <span>portrait / me</span>
+  </div>
+  <!-- landscape photo -->
+  <div class="cell">
+    <div class="leaflet-marker-icon"><div class="map-avatar partner photo"><img class="avatar-img" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='120'%3E%3Crect width='200' height='120' fill='%23533'/%3E%3Ccircle cx='100' cy='60' r='40' fill='%23fc9'/%3E%3C/svg%3E"></div></div>
+    <span>landscape</span>
+  </div>
+  <!-- emoji for comparison -->
+  <div class="cell">
+    <div class="leaflet-marker-icon"><div class="map-avatar me"><span>🦊</span></div></div>
+    <span>emoji</span>
+  </div>
+</body></html>
