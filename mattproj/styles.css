@@ -232,8 +232,11 @@ input:focus { border-color: var(--accent); }
 }
 .avatar-edit-text { display: flex; flex-direction: column; gap: 6px; }
 
-/* Photo avatars: fill and round whatever circular container they sit in */
-.avatar-img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+/* Photo avatars: fill and round whatever circular container they sit in.
+   aspect-ratio:1 forces a square box so non-square photos crop (object-fit)
+   instead of overflowing — height:100% doesn't resolve inside the grid-based
+   map markers, which let portrait photos stretch past the circle. */
+.avatar-img { width: 100%; height: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 50%; display: block; }
 .avatar-tiny { width: 18px; height: 18px; display: inline-block; vertical-align: middle; }
 .me-chip .avatar, .friend-item .avatar, .hero-avatar { overflow: hidden; }
 .request-item .avatar {
