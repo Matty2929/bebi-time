@@ -426,6 +426,10 @@ function renderMe() {
   $("#me-name").textContent = me.displayName;
   $("#my-code").textContent = me.friendCode;
   if (me.mood) $("#me-status").textContent = me.mood;
+  // Keep the map marker's icon in sync with my avatar. The marker is often placed
+  // (on the first GPS fix) before the profile has loaded, so it starts as the default
+  // emoji — refresh it here once me.avatar (my photo) is available.
+  if (myMarker) myMarker.setIcon(avatarIcon(me.avatar || "🦊", "me"));
 }
 
 function renderFriends(friends) {
