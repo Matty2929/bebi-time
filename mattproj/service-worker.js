@@ -1,6 +1,6 @@
 /* Bebi Time service worker — offline app shell + fast launches.
    Bump CACHE whenever you change shell files to force an update. */
-const CACHE = "bebi-v4";
+const CACHE = "bebi-v5";
 
 // Same-origin files that make up the app shell.
 const SHELL = [

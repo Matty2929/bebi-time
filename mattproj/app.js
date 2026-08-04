@@ -316,12 +316,14 @@ function avatarIcon(av, cls = "") {
   const inner = photo
     ? `<img class="avatar-img" src="${escapeHtml(av)}" alt="">`
     : `<span>${escapeHtml(av || "🦊")}</span>`;
+  // Emoji markers are teardrop pins — anchor the pointed tip (bottom-center) to the
+  // location. Photo markers are plain circles with no tail — anchor their center.
   return L.divIcon({
     className: "",
     html: `<div class="map-avatar ${cls} ${photo ? "photo" : ""}">${inner}</div>`,
     iconSize: [44, 44],
-    iconAnchor: [22, 44],
-    popupAnchor: [0, -44],
+    iconAnchor: photo ? [22, 22] : [22, 44],
+    popupAnchor: photo ? [0, -22] : [0, -44],
   });
 }
 
